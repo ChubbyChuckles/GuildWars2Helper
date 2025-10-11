@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 
+#include "nk_config.h"
+
 struct log_context;
 struct nk_context;
 
@@ -16,6 +18,24 @@ struct gui_state
     float system_temperature;
     bool auto_mode;
     float pulse_phase;
+    float warp_charge;
+    int nav_point;
+    int flight_mode;
+    float signal_noise;
+    float anomaly_threshold;
+    float drone_deploy;
+    float coolant_mix;
+    struct nk_colorf hud_tint;
+    float harmonic_channels[3];
+    float beacon_lock;
+    int comm_channel;
+    char command_buffer[64];
+    bool drone_online[3];
+    bool stealth_mode;
+    float spectral_focus;
+    float chrono_lag;
+    bool failsafe_mode;
+    float cascade_pressure;
 };
 
 /**
