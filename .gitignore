@@ -28,6 +28,12 @@
 *.so.*
 *.dylib
 
+
+# Build artifacts
+build/
+CMakeFiles/
+CMakeCache.txt
+
 # Executables
 *.exe
 *.out
@@ -35,6 +41,29 @@
 *.i*86
 *.x86_64
 *.hex
+
+# IDE directories
+.vscode/
+.idea/
+*.suo
+*.user
+*.userossc
+*.sln*
+*.ncb
+*.vcxproj*
+
+# Logs
+*.log
+
+# Generated dependencies
+include/nuklear.h.download
+scripts/deps/
+
+# Misc
+.DS_Store
+Thumbs.db
+*~
+*.tmp
 
 # Debug files
 *.dSYM/
