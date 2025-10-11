@@ -3,7 +3,7 @@ set -e
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${ROOT_DIR}/include/nuklear.h"
-URL_CORE="https://raw.githubusercontent.com/Immediate-Mode-UI/Nuklear/master/src/nuklear.h"
+URL_CORE="https://raw.githubusercontent.com/Immediate-Mode-UI/Nuklear/master/nuklear.h"
 URL_GLFW="https://raw.githubusercontent.com/Immediate-Mode-UI/Nuklear/master/demo/glfw_opengl2/nuklear_glfw_gl2.h"
 
 echo "Saved Nuklear to $TARGET"

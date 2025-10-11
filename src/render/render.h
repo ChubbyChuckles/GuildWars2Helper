@@ -24,7 +24,6 @@ struct render_backend
 {
     struct nk_context *nk;
     void *window;
-    void *driver;
     int width;
     int height;
     struct log_context *logger;

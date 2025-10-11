@@ -26,11 +26,6 @@
 #define MAX_VERTEX_BUFFER 512 * 1024
 #define MAX_ELEMENT_BUFFER 128 * 1024
 
-static struct nk_glfw *backend_driver(struct render_backend *backend)
-{
-    return (struct nk_glfw *)backend->driver;
-}
-
 static void apply_default_theme(struct nk_context *ctx)
 {
     struct nk_color table[NK_COLOR_COUNT];
@@ -112,28 +107,17 @@ int render_init(struct render_backend *backend,
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
 
-    struct nk_glfw *driver = malloc(sizeof(*driver));
-    if (driver == NULL)
-    {
-        log_error(config->logger, "Failed to allocate Nuklear driver state.");
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return -1;
-    }
-
-    memset(driver, 0, sizeof(*driver));
-    backend->nk = nk_glfw3_init(driver, window, NK_GLFW3_INSTALL_CALLBACKS);
+    backend->nk = nk_glfw3_init(window, NK_GLFW3_INSTALL_CALLBACKS);
     if (backend->nk == NULL)
     {
         log_error(config->logger, "Failed to initialize Nuklear GLFW bridge.");
-        free(driver);
         glfwDestroyWindow(window);
         glfwTerminate();
         return -1;
     }
 
     struct nk_font_atlas *atlas = NULL;
-    nk_glfw3_font_stash_begin(driver, &atlas);
+    nk_glfw3_font_stash_begin(&atlas);
 
     struct nk_font_config font_cfg = nk_font_config(0);
     font_cfg.oversample_h = 2;
@@ -144,7 +128,7 @@ int render_init(struct render_backend *backend,
                                                        font_path,
                                                        20.0f,
                                                        &font_cfg);
-    nk_glfw3_font_stash_end(driver);
+    nk_glfw3_font_stash_end();
 
     if (font != NULL)
     {
@@ -161,7 +145,6 @@ int render_init(struct render_backend *backend,
     apply_default_theme(backend->nk);
 
     backend->window = window;
-    backend->driver = driver;
 
     return 0;
 }
@@ -173,12 +156,7 @@ void render_shutdown(struct render_backend *backend)
         return;
     }
 
-    if (backend->driver != NULL)
-    {
-        nk_glfw3_shutdown(backend_driver(backend));
-        free(backend->driver);
-        backend->driver = NULL;
-    }
+    nk_glfw3_shutdown();
 
     if (backend->window != NULL)
     {
@@ -197,17 +175,17 @@ void render_poll_events(struct render_backend *backend)
 
 void render_begin_frame(struct render_backend *backend)
 {
-    if (backend == NULL || backend->driver == NULL)
+    if (backend == NULL)
     {
         return;
     }
 
-    nk_glfw3_new_frame(backend_driver(backend));
+    nk_glfw3_new_frame();
 }
 
 void render_end_frame(struct render_backend *backend)
 {
-    if (backend == NULL || backend->driver == NULL)
+    if (backend == NULL)
     {
         return;
     }
@@ -222,10 +200,7 @@ void render_end_frame(struct render_backend *backend)
     glClearColor(0.04f, 0.05f, 0.09f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    nk_glfw3_render(backend_driver(backend),
-                    NK_ANTI_ALIASING_ON,
-                    MAX_VERTEX_BUFFER,
-                    MAX_ELEMENT_BUFFER);
+    nk_glfw3_render(NK_ANTI_ALIASING_ON);
 
     glfwSwapBuffers((GLFWwindow *)backend->window);
 }

@@ -1,0 +1,113 @@
+name: build-and-release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            artifact: gw2helper-linux
+            archive: tar.gz
+          - name: macOS
+            os: macos-latest
+            artifact: gw2helper-macos
+            archive: tar.gz
+          - name: Windows
+            os: windows-latest
+            artifact: gw2helper-windows
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential pkg-config \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            mesa-common-dev libglu1-mesa-dev libxext-dev libxinerama-dev unzip
+
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew update
+          brew install cmake
+
+      - name: Install dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          choco install make -y
+          choco install zip -y
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+
+      - name: Fetch and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          make deps
+          make
+          make test
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          OUTDIR="dist/${{ matrix.artifact }}"
+          mkdir -p "$OUTDIR"
+          cp build/bin/gw2helper* "$OUTDIR/" || true
+          cp README.md LICENSE "$OUTDIR/"
+          if [ -f assets/README.md ]; then
+            cp assets/README.md "$OUTDIR/"
+          fi
+          case "${{ matrix.archive }}" in
+            tar.gz)
+              tar -C dist -czf "${OUTDIR}-${VERSION}.tar.gz" "${{ matrix.artifact }}"
+              rm -rf "$OUTDIR"
+              ;;
+            zip)
+              (cd dist && zip -r "${{ matrix.artifact }}-${VERSION}.zip" "${{ matrix.artifact }}")
+              rm -rf "$OUTDIR"
+              ;;
+          esac
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/**/*.tar.gz
+            dist/**/*.zip

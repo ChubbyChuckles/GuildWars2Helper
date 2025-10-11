@@ -158,7 +158,7 @@ void gui_render(struct gui_app *app,
         nk_prog(ctx,
                 (nk_size)(app->state.propulsion_level * 100.0f),
                 100,
-                NK_FALSE);
+                nk_false);
 
         nk_layout_row_dynamic(ctx, 18.0f, 1);
         nk_label(ctx,
@@ -192,7 +192,7 @@ void gui_render(struct gui_app *app,
         nk_layout_row_dynamic(ctx, 22.0f, 1);
         nk_label(ctx, "Reactor Flux", NK_TEXT_LEFT);
         nk_layout_row_dynamic(ctx, 20.0f, 1);
-        nk_prog(ctx, (nk_size)(drive_wave * 100.0f), 100, NK_FALSE);
+        nk_prog(ctx, (nk_size)(drive_wave * 100.0f), 100, nk_false);
     }
     nk_end(ctx);
 }

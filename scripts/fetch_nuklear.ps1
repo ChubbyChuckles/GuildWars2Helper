@@ -1,7 +1,7 @@
 $Root = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent | Split-Path -Parent
 $CoreTarget = Join-Path $Root "include/nuklear.h"
 $GlfwTarget = Join-Path $Root "include/nuklear_glfw_gl2.h"
-$CoreUrl = "https://raw.githubusercontent.com/Immediate-Mode-UI/Nuklear/master/src/nuklear.h"
+$CoreUrl = "https://raw.githubusercontent.com/Immediate-Mode-UI/Nuklear/master/nuklear.h"
 $GlfwUrl = "https://raw.githubusercontent.com/Immediate-Mode-UI/Nuklear/master/demo/glfw_opengl2/nuklear_glfw_gl2.h"
 
 if (-Not (Test-Path $CoreTarget)) {
