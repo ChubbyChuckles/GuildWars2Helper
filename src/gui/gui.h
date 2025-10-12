@@ -7,6 +7,7 @@
 
 struct log_context;
 struct nk_context;
+struct render_backend;
 
 /**
  * Tracks the interactive state exposed through the control panel.
@@ -59,6 +60,11 @@ struct gui_state
     struct nk_color accent_color;
     struct nk_color accent_history[3];
     int table_selection;
+    bool dragging_titlebar;
+    bool resizing_window;
+    float uptime_seconds;
+    float smoothed_delta;
+    float smoothed_fps;
 };
 
 /**
@@ -67,6 +73,7 @@ struct gui_state
 struct gui_config
 {
     struct log_context *logger;
+    struct render_backend *renderer;
 };
 
 /**
@@ -76,6 +83,7 @@ struct gui_app
 {
     struct gui_state state;
     struct log_context *logger;
+    struct render_backend *renderer;
 };
 
 /** Initializes the GUI state. */

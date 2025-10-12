@@ -91,6 +91,7 @@ int render_init(struct render_backend *backend,
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
 
     GLFWwindow *window = glfwCreateWindow(config->width,
                                           config->height,
@@ -145,6 +146,18 @@ int render_init(struct render_backend *backend,
     apply_default_theme(backend->nk);
 
     backend->window = window;
+    backend->is_dragging = false;
+    backend->drag_cursor_start_x = 0.0;
+    backend->drag_cursor_start_y = 0.0;
+    backend->drag_window_start_x = 0;
+    backend->drag_window_start_y = 0;
+    backend->drag_cursor_screen_x = 0.0;
+    backend->drag_cursor_screen_y = 0.0;
+    backend->is_resizing = false;
+    backend->resize_cursor_screen_x = 0.0;
+    backend->resize_cursor_screen_y = 0.0;
+    backend->resize_window_start_width = backend->width;
+    backend->resize_window_start_height = backend->height;
 
     return 0;
 }
@@ -228,4 +241,210 @@ struct nk_context *render_context(struct render_backend *backend)
 float render_time_seconds(void)
 {
     return (float)glfwGetTime();
+}
+
+void render_window_size(const struct render_backend *backend,
+                        int *width,
+                        int *height)
+{
+    if (backend == NULL || backend->window == NULL)
+    {
+        if (width != NULL)
+        {
+            *width = 0;
+        }
+        if (height != NULL)
+        {
+            *height = 0;
+        }
+        return;
+    }
+
+    if (width != NULL)
+    {
+        *width = backend->width;
+    }
+    if (height != NULL)
+    {
+        *height = backend->height;
+    }
+}
+
+void render_window_request_close(struct render_backend *backend)
+{
+    if (backend == NULL || backend->window == NULL)
+    {
+        return;
+    }
+
+    glfwSetWindowShouldClose((GLFWwindow *)backend->window, GLFW_TRUE);
+}
+
+void render_window_minimize(struct render_backend *backend)
+{
+    if (backend == NULL || backend->window == NULL)
+    {
+        return;
+    }
+
+    glfwIconifyWindow((GLFWwindow *)backend->window);
+}
+
+void render_window_toggle_maximize(struct render_backend *backend)
+{
+    if (backend == NULL || backend->window == NULL)
+    {
+        return;
+    }
+
+    GLFWwindow *window = (GLFWwindow *)backend->window;
+    if (glfwGetWindowAttrib(window, GLFW_MAXIMIZED) == GLFW_TRUE)
+    {
+        glfwRestoreWindow(window);
+    }
+    else
+    {
+        glfwMaximizeWindow(window);
+    }
+}
+
+bool render_window_is_maximized(const struct render_backend *backend)
+{
+    if (backend == NULL || backend->window == NULL)
+    {
+        return false;
+    }
+
+    return glfwGetWindowAttrib((GLFWwindow *)backend->window, GLFW_MAXIMIZED) == GLFW_TRUE;
+}
+
+void render_window_begin_drag(struct render_backend *backend)
+{
+    if (backend == NULL || backend->window == NULL)
+    {
+        return;
+    }
+
+    GLFWwindow *window = (GLFWwindow *)backend->window;
+    glfwGetCursorPos(window,
+                     &backend->drag_cursor_start_x,
+                     &backend->drag_cursor_start_y);
+    glfwGetWindowPos(window,
+                     &backend->drag_window_start_x,
+                     &backend->drag_window_start_y);
+    backend->drag_cursor_screen_x =
+        backend->drag_window_start_x + backend->drag_cursor_start_x;
+    backend->drag_cursor_screen_y =
+        backend->drag_window_start_y + backend->drag_cursor_start_y;
+    backend->is_dragging = true;
+}
+
+void render_window_drag_update(struct render_backend *backend)
+{
+    if (backend == NULL || backend->window == NULL || !backend->is_dragging)
+    {
+        return;
+    }
+
+    GLFWwindow *window = (GLFWwindow *)backend->window;
+    double cursor_x = 0.0;
+    double cursor_y = 0.0;
+    glfwGetCursorPos(window, &cursor_x, &cursor_y);
+    int window_x = 0;
+    int window_y = 0;
+    glfwGetWindowPos(window, &window_x, &window_y);
+
+    double cursor_screen_x = window_x + cursor_x;
+    double cursor_screen_y = window_y + cursor_y;
+
+    int target_x = backend->drag_window_start_x + (int)(cursor_screen_x - backend->drag_cursor_screen_x);
+    int target_y = backend->drag_window_start_y + (int)(cursor_screen_y - backend->drag_cursor_screen_y);
+    glfwSetWindowPos(window, target_x, target_y);
+}
+
+void render_window_end_drag(struct render_backend *backend)
+{
+    if (backend == NULL)
+    {
+        return;
+    }
+
+    backend->is_dragging = false;
+}
+
+void render_window_begin_resize(struct render_backend *backend)
+{
+    if (backend == NULL || backend->window == NULL)
+    {
+        return;
+    }
+
+    if (backend->is_dragging)
+    {
+        render_window_end_drag(backend);
+    }
+
+    GLFWwindow *window = (GLFWwindow *)backend->window;
+    double cursor_x = 0.0;
+    double cursor_y = 0.0;
+    glfwGetCursorPos(window, &cursor_x, &cursor_y);
+    int window_x = 0;
+    int window_y = 0;
+    glfwGetWindowPos(window, &window_x, &window_y);
+
+    backend->resize_cursor_screen_x = window_x + cursor_x;
+    backend->resize_cursor_screen_y = window_y + cursor_y;
+    backend->resize_window_start_width = backend->width;
+    backend->resize_window_start_height = backend->height;
+    backend->is_resizing = true;
+}
+
+void render_window_resize_update(struct render_backend *backend,
+                                 int min_width,
+                                 int min_height)
+{
+    if (backend == NULL || backend->window == NULL || !backend->is_resizing)
+    {
+        return;
+    }
+
+    GLFWwindow *window = (GLFWwindow *)backend->window;
+    double cursor_x = 0.0;
+    double cursor_y = 0.0;
+    glfwGetCursorPos(window, &cursor_x, &cursor_y);
+    int window_x = 0;
+    int window_y = 0;
+    glfwGetWindowPos(window, &window_x, &window_y);
+
+    double cursor_screen_x = window_x + cursor_x;
+    double cursor_screen_y = window_y + cursor_y;
+
+    int width_delta = (int)(cursor_screen_x - backend->resize_cursor_screen_x);
+    int height_delta = (int)(cursor_screen_y - backend->resize_cursor_screen_y);
+
+    int new_width = backend->resize_window_start_width + width_delta;
+    int new_height = backend->resize_window_start_height + height_delta;
+
+    if (new_width < min_width)
+    {
+        new_width = min_width;
+    }
+    if (new_height < min_height)
+    {
+        new_height = min_height;
+    }
+
+    glfwSetWindowSize(window, new_width, new_height);
+    backend->width = new_width;
+    backend->height = new_height;
+}
+
+void render_window_end_resize(struct render_backend *backend)
+{
+    if (backend == NULL)
+    {
+        return;
+    }
+
+    backend->is_resizing = false;
 }

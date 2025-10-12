@@ -1,11 +1,26 @@
 #include "gui.h"
 
+#include <stdio.h>
 #include <math.h>
 #include <stddef.h>
 #include <string.h>
 
 #include "nk_config.h"
 #include "../utils/utils.h"
+#include "../render/render.h"
+
+static const char *k_nav_points[] = {
+    "Arcology Gate",
+    "Fractal Lattice",
+    "Sage Conflux",
+    "Azure Rift",
+    "Eon Relay"};
+static const int k_nav_point_count = (int)(sizeof(k_nav_points) / sizeof(k_nav_points[0]));
+
+static const char *k_flight_modes[] = {
+    "Cruise",
+    "Intercept",
+    "Evasion"};
 
 static void push_button_theme(struct nk_context *ctx,
                               struct nk_color normal,
@@ -126,6 +141,13 @@ int gui_init(struct gui_app *app, const struct gui_config *config)
     app->state.accent_history[1] = nk_rgba(56, 236, 176, 255);
     app->state.accent_history[2] = nk_rgba(255, 144, 200, 255);
     app->state.table_selection = 0;
+    app->state.dragging_titlebar = false;
+    app->state.resizing_window = false;
+    app->state.uptime_seconds = 0.0f;
+    app->state.smoothed_delta = 1.0f / 60.0f;
+    app->state.smoothed_fps = 60.0f;
+
+    app->renderer = config->renderer;
 
     for (int i = 0; i < (int)NK_LEN(app->state.waveform); ++i)
     {
@@ -160,6 +182,54 @@ void gui_render(struct gui_app *app,
     {
         return;
     }
+
+    int window_width = 1280;
+    int window_height = 720;
+    if (app->renderer != NULL)
+    {
+        render_window_size(app->renderer, &window_width, &window_height);
+    }
+    if (window_width <= 0)
+    {
+        window_width = 1280;
+    }
+    if (window_height <= 0)
+    {
+        window_height = 720;
+    }
+
+    const float titlebar_height = 56.0f;
+    const float statusbar_height = 44.0f;
+    const float layout_margin = 24.0f;
+    const float top_offset = titlebar_height + layout_margin;
+    const float bottom_offset = statusbar_height + layout_margin;
+    float usable_height = (float)window_height - top_offset - bottom_offset;
+    if (usable_height < 300.0f)
+    {
+        usable_height = 300.0f;
+    }
+
+    if (delta_seconds < 0.0f)
+    {
+        delta_seconds = 0.0f;
+    }
+    app->state.uptime_seconds += delta_seconds;
+    if (app->state.uptime_seconds < 0.0f)
+    {
+        app->state.uptime_seconds = 0.0f;
+    }
+
+    const float smoothing = 0.12f;
+    float clamped_delta = delta_seconds;
+    if (clamped_delta < 0.0001f)
+    {
+        clamped_delta = 0.0001f;
+    }
+    app->state.smoothed_delta =
+        (1.0f - smoothing) * app->state.smoothed_delta + smoothing * clamped_delta;
+    float instant_fps = (clamped_delta > 0.0f) ? (1.0f / clamped_delta) : app->state.smoothed_fps;
+    app->state.smoothed_fps =
+        (1.0f - smoothing) * app->state.smoothed_fps + smoothing * instant_fps;
 
     app->state.pulse_phase += delta_seconds * 2.5f;
     if (app->state.pulse_phase > 2.0f * (float)NK_PI)
@@ -199,7 +269,24 @@ void gui_render(struct gui_app *app,
         app->state.timeline_points[i] = 0.5f + 0.5f * cosf(t);
     }
 
-    struct nk_rect panel_bounds = nk_rect(40.0f, 40.0f, 460.0f, 660.0f);
+    const float control_panel_width = fminf(480.0f, (float)window_width * 0.36f);
+    const float diagnostics_width = fminf(340.0f, (float)window_width * 0.28f);
+    const float showcase_width = fmaxf(420.0f,
+                                       (float)window_width - control_panel_width - diagnostics_width - 3.0f * layout_margin);
+
+    struct nk_rect panel_bounds = nk_rect(32.0f,
+                                          top_offset,
+                                          control_panel_width,
+                                          usable_height);
+
+    const float mid_column_x = panel_bounds.x + panel_bounds.w + layout_margin;
+    const float right_column_x = mid_column_x + diagnostics_width + layout_margin;
+    const float systems_height = fminf(usable_height * 0.42f, 280.0f);
+    float quantum_height = usable_height - systems_height - layout_margin;
+    if (quantum_height < 220.0f)
+    {
+        quantum_height = 220.0f;
+    }
 
     if (nk_begin(ctx,
                  "Futuristic Control",
@@ -259,13 +346,7 @@ void gui_render(struct gui_app *app,
             nk_tooltip(ctx, "Drag to tune the jump capacitors.");
         }
 
-        static const char *nav_points[] = {
-            "Arcology Gate",
-            "Fractal Lattice",
-            "Sage Conflux",
-            "Azure Rift",
-            "Eon Relay"};
-        const int nav_point_count = (int)NK_LEN(nav_points);
+        const int nav_point_count = k_nav_point_count;
         if (app->state.nav_point < 0 || app->state.nav_point >= nav_point_count)
         {
             app->state.nav_point = 0;
@@ -274,20 +355,20 @@ void gui_render(struct gui_app *app,
         nk_layout_row_dynamic(ctx, 30.0f, 1);
         nk_label(ctx, "Navigation Solution", NK_TEXT_LEFT);
         if (nk_combo_begin_label(ctx,
-                                 nav_points[app->state.nav_point],
+                                 k_nav_points[app->state.nav_point],
                                  nk_vec2(280.0f, 200.0f)))
         {
             nk_layout_row_dynamic(ctx, 24.0f, 1);
             for (int i = 0; i < nav_point_count; ++i)
             {
-                if (nk_combo_item_label(ctx, nav_points[i], NK_TEXT_LEFT))
+                if (nk_combo_item_label(ctx, k_nav_points[i], NK_TEXT_LEFT))
                 {
                     if (app->state.nav_point != i && app->logger != NULL)
                     {
                         log_message(app->logger,
                                     LOG_LEVEL_INFO,
                                     "Navigation solution locked on %s.",
-                                    nav_points[i]);
+                                    k_nav_points[i]);
                     }
                     app->state.nav_point = i;
                 }
@@ -296,21 +377,17 @@ void gui_render(struct gui_app *app,
         }
 
         nk_layout_row_dynamic(ctx, 26.0f, 3);
-        static const char *flight_modes[] = {
-            "Cruise",
-            "Intercept",
-            "Evasion"};
         for (int i = 0; i < 3; ++i)
         {
             nk_bool active_mode = app->state.flight_mode == i ? nk_true : nk_false;
-            if (nk_option_label(ctx, flight_modes[i], active_mode))
+            if (nk_option_label(ctx, k_flight_modes[i], active_mode))
             {
                 if (app->state.flight_mode != i && app->logger != NULL)
                 {
                     log_message(app->logger,
                                 LOG_LEVEL_DEBUG,
                                 "Flight profile switched to %s mode.",
-                                flight_modes[i]);
+                                k_flight_modes[i]);
                 }
                 app->state.flight_mode = i;
             }
@@ -486,7 +563,10 @@ void gui_render(struct gui_app *app,
 
     if (nk_begin(ctx,
                  "Systems Overview",
-                 nk_rect(500.0f, 40.0f, 280.0f, 240.0f),
+                 nk_rect(mid_column_x,
+                         top_offset,
+                         diagnostics_width,
+                         systems_height),
                  NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_TITLE))
     {
         nk_layout_row_dynamic(ctx, 22.0f, 1);
@@ -573,7 +653,10 @@ void gui_render(struct gui_app *app,
 
     if (nk_begin(ctx,
                  "Toolkit Showcase",
-                 nk_rect(840.0f, 40.0f, 400.0f, 600.0f),
+                 nk_rect(right_column_x,
+                         top_offset,
+                         showcase_width,
+                         usable_height),
                  NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE |
                      NK_WINDOW_MINIMIZABLE | NK_WINDOW_TITLE))
     {
@@ -1156,7 +1239,10 @@ void gui_render(struct gui_app *app,
 
     if (nk_begin(ctx,
                  "Quantum Diagnostics",
-                 nk_rect(500.0f, 320.0f, 320.0f, 320.0f),
+                 nk_rect(mid_column_x,
+                         top_offset + systems_height + layout_margin,
+                         diagnostics_width,
+                         quantum_height),
                  NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE |
                      NK_WINDOW_TITLE))
     {
@@ -1237,4 +1323,378 @@ void gui_render(struct gui_app *app,
                   app->state.failsafe_mode ? "LOCKED" : "DORMANT");
     }
     nk_end(ctx);
+
+    int nav_index = app->state.nav_point;
+    if (nav_index < 0 || nav_index >= k_nav_point_count)
+    {
+        nav_index = 0;
+    }
+    int flight_index = app->state.flight_mode;
+    if (flight_index < 0 || flight_index >= 3)
+    {
+        flight_index = 0;
+    }
+    const char *nav_label = k_nav_points[nav_index];
+    const char *flight_label = k_flight_modes[flight_index];
+
+    int uptime_minutes = (int)(app->state.uptime_seconds / 60.0f);
+    if (uptime_minutes > 99)
+    {
+        uptime_minutes = 99;
+    }
+    float uptime_seconds_fraction = fmodf(app->state.uptime_seconds, 60.0f);
+    int uptime_seconds_whole = (int)uptime_seconds_fraction;
+
+    char uptime_label[64];
+    snprintf(uptime_label,
+             sizeof(uptime_label),
+             "Uptime %02d:%02d",
+             uptime_minutes,
+             uptime_seconds_whole);
+
+    char strapline[128];
+    snprintf(strapline,
+             sizeof(strapline),
+             "Route: %s   |   Flight: %s   |   Warp %.0f%%",
+             nav_label,
+             flight_label,
+             app->state.warp_charge * 100.0f);
+
+    char metrics_label[64];
+    snprintf(metrics_label,
+             sizeof(metrics_label),
+             "FPS %05.1f   Δ %.2f ms",
+             app->state.smoothed_fps,
+             app->state.smoothed_delta * 1000.0f);
+
+    struct nk_color accent_primary = nk_rgba(72, 208, 255, 255);
+    struct nk_color accent_secondary = nk_rgba(148, 92, 255, 235);
+    int glow_shift = (int)(glow * 45.0f);
+    struct nk_color grad_left = nk_rgba(26 + glow_shift,
+                                        54 + glow_shift,
+                                        108 + glow_shift * 2,
+                                        240);
+    struct nk_color grad_right = nk_rgba(52 + glow_shift,
+                                         124 + glow_shift,
+                                         212,
+                                         236);
+    struct nk_color grad_bottom = nk_rgba(12, 24, 44 + glow_shift, 230);
+    struct nk_color grad_bottom_left = nk_rgba(16, 30, 64 + glow_shift, 230);
+
+    struct nk_rect title_bounds = nk_rect(0.0f, 0.0f, (float)window_width, titlebar_height);
+    nk_style_push_style_item(ctx,
+                             &ctx->style.window.fixed_background,
+                             nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+    nk_style_push_color(ctx,
+                        &ctx->style.window.background,
+                        nk_rgba(0, 0, 0, 0));
+    nk_style_push_vec2(ctx, &ctx->style.window.padding, nk_vec2(18.0f, 8.0f));
+    nk_style_push_vec2(ctx, &ctx->style.window.spacing, nk_vec2(12.0f, 0.0f));
+    if (nk_begin(ctx,
+                 "NeonTitleChrome",
+                 title_bounds,
+                 NK_WINDOW_NO_SCROLLBAR | NK_WINDOW_BACKGROUND))
+    {
+        struct nk_command_buffer *canvas = nk_window_get_canvas(ctx);
+        struct nk_rect bounds = nk_window_get_bounds(ctx);
+        nk_fill_rect_multi_color(canvas,
+                                 bounds,
+                                 grad_left,
+                                 grad_right,
+                                 grad_bottom,
+                                 grad_bottom_left);
+        nk_stroke_line(canvas,
+                       bounds.x,
+                       bounds.y + bounds.h - 2.0f,
+                       bounds.x + bounds.w,
+                       bounds.y + bounds.h - 2.0f,
+                       2.0f,
+                       accent_primary);
+
+        struct nk_rect brand_bar = nk_rect(bounds.x + 16.0f,
+                                           bounds.y + 6.0f,
+                                           6.0f,
+                                           bounds.h - 12.0f);
+        nk_fill_rect(canvas, brand_bar, 3.0f, accent_primary);
+
+        const float button_width = 40.0f;
+        const float content_height = titlebar_height - 18.0f;
+        const float brand_width = 200.0f;
+        const float metrics_width = 210.0f;
+        float padding_x = ctx->style.window.padding.x;
+        float spacing_x = ctx->style.window.spacing.x;
+        float available_width = bounds.w - 2.0f * padding_x;
+        float middle_width = available_width - brand_width - metrics_width - (button_width * 3.0f) - spacing_x * 5.0f;
+        if (middle_width < 120.0f)
+        {
+            middle_width = 120.0f;
+        }
+
+        nk_layout_row_begin(ctx, NK_STATIC, content_height, 6);
+        nk_layout_row_push(ctx, brand_width);
+        nk_label_colored(ctx,
+                         "GuildWars2 Helper",
+                         NK_TEXT_LEFT,
+                         nk_rgba(210, 240, 255, 255));
+
+        nk_layout_row_push(ctx, middle_width);
+        nk_label_colored_wrap(ctx,
+                              strapline,
+                              nk_rgba(180, 228, 255, 235));
+
+        nk_layout_row_push(ctx, metrics_width);
+        nk_label_colored(ctx,
+                         metrics_label,
+                         NK_TEXT_RIGHT,
+                         accent_primary);
+
+        struct nk_color btn_normal = nk_rgba(28, 48, 72, 220);
+        struct nk_color btn_hover = nk_rgba(64, 112, 172, 240);
+        struct nk_color btn_active = nk_rgba(92, 160, 220, 255);
+        push_button_theme(ctx, btn_normal, btn_hover, btn_active);
+
+        nk_layout_row_push(ctx, button_width);
+        if (nk_button_label(ctx, "-"))
+        {
+            if (app->renderer != NULL)
+            {
+                if (app->state.dragging_titlebar)
+                {
+                    render_window_end_drag(app->renderer);
+                    app->state.dragging_titlebar = false;
+                }
+                if (app->state.resizing_window)
+                {
+                    render_window_end_resize(app->renderer);
+                    app->state.resizing_window = false;
+                }
+                render_window_minimize(app->renderer);
+            }
+        }
+
+        nk_layout_row_push(ctx, button_width);
+        const char *maximize_label = "[ ]";
+        if (app->renderer != NULL && render_window_is_maximized(app->renderer))
+        {
+            maximize_label = "<>";
+        }
+        if (nk_button_label(ctx, maximize_label))
+        {
+            if (app->renderer != NULL)
+            {
+                if (app->state.dragging_titlebar)
+                {
+                    render_window_end_drag(app->renderer);
+                    app->state.dragging_titlebar = false;
+                }
+                if (app->state.resizing_window)
+                {
+                    render_window_end_resize(app->renderer);
+                    app->state.resizing_window = false;
+                }
+                render_window_toggle_maximize(app->renderer);
+            }
+        }
+
+        nk_layout_row_push(ctx, button_width);
+        if (nk_button_label(ctx, "X"))
+        {
+            if (app->renderer != NULL)
+            {
+                if (app->state.dragging_titlebar)
+                {
+                    render_window_end_drag(app->renderer);
+                    app->state.dragging_titlebar = false;
+                }
+                if (app->state.resizing_window)
+                {
+                    render_window_end_resize(app->renderer);
+                    app->state.resizing_window = false;
+                }
+                render_window_request_close(app->renderer);
+            }
+        }
+
+        pop_button_theme(ctx);
+        nk_layout_row_end(ctx);
+
+        float drag_padding = ctx->style.window.padding.x;
+        float drag_start_x = bounds.x + drag_padding + brand_width + 12.0f;
+        float drag_width = middle_width;
+        struct nk_rect drag_zone = nk_rect(drag_start_x,
+                                           bounds.y,
+                                           drag_width,
+                                           bounds.h);
+        const struct nk_input *input = &ctx->input;
+        if (app->state.dragging_titlebar)
+        {
+            if (!nk_input_is_mouse_down(input, NK_BUTTON_LEFT))
+            {
+                app->state.dragging_titlebar = false;
+                if (app->renderer != NULL)
+                {
+                    render_window_end_drag(app->renderer);
+                }
+            }
+            else if (app->renderer != NULL)
+            {
+                render_window_drag_update(app->renderer);
+            }
+        }
+        else if (!app->state.resizing_window &&
+                 nk_input_is_mouse_hovering_rect(input, drag_zone) &&
+                 nk_input_is_mouse_pressed(input, NK_BUTTON_LEFT))
+        {
+            app->state.dragging_titlebar = true;
+            if (app->renderer != NULL)
+            {
+                render_window_begin_drag(app->renderer);
+            }
+        }
+    }
+    nk_end(ctx);
+    nk_style_pop_vec2(ctx);
+    nk_style_pop_vec2(ctx);
+    nk_style_pop_color(ctx);
+    nk_style_pop_style_item(ctx);
+
+    struct nk_rect status_bounds = nk_rect(0.0f,
+                                           (float)window_height - statusbar_height,
+                                           (float)window_width,
+                                           statusbar_height);
+    nk_style_push_style_item(ctx,
+                             &ctx->style.window.fixed_background,
+                             nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+    nk_style_push_color(ctx,
+                        &ctx->style.window.background,
+                        nk_rgba(0, 0, 0, 0));
+    nk_style_push_vec2(ctx, &ctx->style.window.padding, nk_vec2(20.0f, 6.0f));
+    nk_style_push_vec2(ctx, &ctx->style.window.spacing, nk_vec2(10.0f, 4.0f));
+    if (nk_begin(ctx,
+                 "NeonStatusChrome",
+                 status_bounds,
+                 NK_WINDOW_NO_SCROLLBAR | NK_WINDOW_BACKGROUND))
+    {
+        struct nk_command_buffer *canvas = nk_window_get_canvas(ctx);
+        struct nk_rect bounds = nk_window_get_bounds(ctx);
+        nk_fill_rect_multi_color(canvas,
+                                 bounds,
+                                 nk_rgba(20, 32, 64, 230),
+                                 nk_rgba(40, 72, 120, 225),
+                                 nk_rgba(16, 24, 40, 225),
+                                 nk_rgba(12, 20, 32, 230));
+        nk_stroke_line(canvas,
+                       bounds.x,
+                       bounds.y + 1.5f,
+                       bounds.x + bounds.w,
+                       bounds.y + 1.5f,
+                       2.0f,
+                       accent_secondary);
+
+        const float block_height = statusbar_height - 12.0f;
+        const float row_height = block_height / 2.0f;
+        struct nk_color text_color = nk_rgba(188, 226, 255, 235);
+
+        nk_layout_row_dynamic(ctx, row_height, 4);
+        nk_label_colored(ctx, uptime_label, NK_TEXT_LEFT, text_color);
+        nk_labelf_colored(ctx,
+                          NK_TEXT_LEFT,
+                          text_color,
+                          "Mode %s",
+                          flight_label);
+        nk_labelf_colored(ctx,
+                          NK_TEXT_LEFT,
+                          text_color,
+                          "Beacon %.0f%%",
+                          app->state.beacon_lock * 100.0f);
+        nk_labelf_colored(ctx,
+                          NK_TEXT_LEFT,
+                          text_color,
+                          "Temp %.1f°C",
+                          app->state.system_temperature);
+
+        nk_layout_row_dynamic(ctx, row_height, 4);
+        nk_prog(ctx,
+                (nk_size)(app->state.propulsion_level * 100.0f),
+                100,
+                nk_false);
+        nk_prog(ctx,
+                (nk_size)(app->state.shield_level * 100.0f),
+                100,
+                nk_false);
+        nk_prog(ctx,
+                (nk_size)(app->state.coolant_mix * 100.0f),
+                100,
+                nk_false);
+        nk_prog(ctx,
+                (nk_size)(app->state.signal_noise * 100.0f),
+                100,
+                nk_false);
+
+        struct nk_rect highlight = nk_rect(bounds.x + bounds.w - 180.0f,
+                                           bounds.y + 8.0f,
+                                           120.0f,
+                                           bounds.h - 16.0f);
+        nk_stroke_rect(canvas,
+                       highlight,
+                       6.0f,
+                       2.0f,
+                       accent_primary);
+        nk_stroke_curve(canvas,
+                        highlight.x,
+                        highlight.y + highlight.h,
+                        highlight.x + highlight.w * 0.35f,
+                        highlight.y + highlight.h + 14.0f,
+                        highlight.x + highlight.w * 0.65f,
+                        highlight.y - 14.0f,
+                        highlight.x + highlight.w,
+                        highlight.y + highlight.h,
+                        1.5f,
+                        accent_secondary);
+
+        struct nk_rect resize_handle = nk_rect(bounds.x + bounds.w - 48.0f,
+                                               bounds.y + bounds.h - 24.0f,
+                                               32.0f,
+                                               20.0f);
+        nk_fill_triangle(canvas,
+                         resize_handle.x,
+                         resize_handle.y + resize_handle.h,
+                         resize_handle.x + resize_handle.w,
+                         resize_handle.y + resize_handle.h,
+                         resize_handle.x + resize_handle.w,
+                         resize_handle.y,
+                         nk_rgba(120, 180, 240, 200));
+
+        const struct nk_input *input = &ctx->input;
+        if (app->state.resizing_window)
+        {
+            if (!nk_input_is_mouse_down(input, NK_BUTTON_LEFT))
+            {
+                app->state.resizing_window = false;
+                if (app->renderer != NULL)
+                {
+                    render_window_end_resize(app->renderer);
+                }
+            }
+            else if (app->renderer != NULL)
+            {
+                render_window_resize_update(app->renderer, 960, 600);
+            }
+        }
+        else if (!app->state.dragging_titlebar &&
+                 nk_input_is_mouse_hovering_rect(input, resize_handle) &&
+                 nk_input_is_mouse_pressed(input, NK_BUTTON_LEFT))
+        {
+            app->state.resizing_window = true;
+            if (app->renderer != NULL)
+            {
+                render_window_begin_resize(app->renderer);
+            }
+        }
+    }
+    nk_end(ctx);
+    nk_style_pop_vec2(ctx);
+    nk_style_pop_vec2(ctx);
+    nk_style_pop_color(ctx);
+    nk_style_pop_style_item(ctx);
 }

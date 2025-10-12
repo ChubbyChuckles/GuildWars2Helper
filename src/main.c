@@ -28,7 +28,8 @@ int main(void)
 
     struct gui_app gui;
     const struct gui_config gui_cfg = {
-        .logger = &logger};
+        .logger = &logger,
+        .renderer = &renderer};
 
     if (gui_init(&gui, &gui_cfg) != 0)
     {

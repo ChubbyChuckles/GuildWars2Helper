@@ -2,6 +2,8 @@ name: build-and-release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
@@ -67,7 +69,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${GITHUB_REF_NAME}-${GITHUB_SHA:0:7}"
           OUTDIR="dist/${{ matrix.artifact }}"
           mkdir -p "$OUTDIR"
           cp build/bin/gw2helper* "$OUTDIR/" || true
@@ -98,7 +100,7 @@ jobs:
     name: Publish Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push'
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -108,6 +110,11 @@ jobs:
       - name: Publish
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('commit-{0}', github.sha) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && format('Release {0}', github.ref_name) || format('Commit Snapshot {0}', github.sha) }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          generate_release_notes: true
           files: |
             dist/**/*.tar.gz
             dist/**/*.zip
