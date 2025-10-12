@@ -36,6 +36,29 @@ struct gui_state
     float chrono_lag;
     bool failsafe_mode;
     float cascade_pressure;
+    int showcase_tab;
+    int menu_choice;
+    int context_selection;
+    bool popup_visible;
+    int popup_selection;
+    bool selectable_toggles[4];
+    float waveform[32];
+    float sequencer[12];
+    float range_window[2];
+    float expander_weights[4];
+    struct nk_colorf palette[4];
+    float knob_gain;
+    float knob_mix;
+    char filter_buffer[32];
+    int widget_radio;
+    int slider_precision;
+    bool checklist[3];
+    float spectrum_matrix[3][3];
+    float timeline_points[8];
+    char multiline_buffer[256];
+    struct nk_color accent_color;
+    struct nk_color accent_history[3];
+    int table_selection;
 };
 
 /**

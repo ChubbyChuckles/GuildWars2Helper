@@ -123,7 +123,7 @@ int render_init(struct render_backend *backend,
     font_cfg.oversample_h = 2;
     font_cfg.oversample_v = 1;
 
-    const char *font_path = "assets/Orbitron-Regular.ttf";
+    const char *font_path = "assets/Orbitron-VariableFont_wght.ttf";
     struct nk_font *font = nk_font_atlas_add_from_file(atlas,
                                                        font_path,
                                                        20.0f,
