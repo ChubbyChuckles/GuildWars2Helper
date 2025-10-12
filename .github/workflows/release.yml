@@ -72,14 +72,23 @@ jobs:
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
-          .\scripts\fetch_glfw.ps1
-          .\scripts\fetch_nuklear.ps1
-          cmake -S scripts/deps/glfw -B scripts/deps/glfw/build -DBUILD_SHARED_LIBS=OFF `
-            -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_DOCS=OFF
-          cmake --build scripts/deps/glfw/build --config Release
-          cmake -S . -B build/cmake -G "Visual Studio 17 2022" -A x64
-          cmake --build build/cmake --config Release
-          ctest --test-dir build/cmake --config Release --output-on-failure
+          $repo = $env:GITHUB_WORKSPACE
+          Push-Location $repo
+          try {
+              & "$repo/scripts/fetch_glfw.ps1"
+              Set-Location $repo
+              & "$repo/scripts/fetch_nuklear.ps1"
+              Set-Location $repo
+              cmake -S "$repo/scripts/deps/glfw" -B "$repo/scripts/deps/glfw/build" -DBUILD_SHARED_LIBS=OFF `
+                -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_DOCS=OFF
+              cmake --build "$repo/scripts/deps/glfw/build" --config Release
+              cmake -S "$repo" -B "$repo/build/cmake" -G "Visual Studio 17 2022" -A x64
+              cmake --build "$repo/build/cmake" --config Release
+              ctest --test-dir "$repo/build/cmake" --config Release --output-on-failure
+          }
+          finally {
+              Pop-Location
+          }
 
       - name: Package artifact
         shell: bash
