@@ -269,18 +269,58 @@ void gui_render(struct gui_app *app,
         app->state.timeline_points[i] = 0.5f + 0.5f * cosf(t);
     }
 
-    const float control_panel_width = fminf(480.0f, (float)window_width * 0.36f);
-    const float diagnostics_width = fminf(340.0f, (float)window_width * 0.28f);
-    const float showcase_width = fmaxf(420.0f,
-                                       (float)window_width - control_panel_width - diagnostics_width - 3.0f * layout_margin);
+    const float content_width = (float)window_width - 2.0f * layout_margin;
+    float column_gap = layout_margin;
+    if (content_width < 720.0f)
+    {
+        column_gap = fmaxf(16.0f, layout_margin * 0.6f);
+    }
 
-    struct nk_rect panel_bounds = nk_rect(32.0f,
+    const float control_min = 300.0f;
+    const float control_max = 420.0f;
+    float control_panel_width = (float)window_width * 0.32f;
+    control_panel_width = fmaxf(control_min, fminf(control_max, control_panel_width));
+
+    const float diagnostics_min = 220.0f;
+    const float diagnostics_max = 320.0f;
+    float diagnostics_width = (float)window_width * 0.25f;
+    diagnostics_width = fmaxf(diagnostics_min, fminf(diagnostics_max, diagnostics_width));
+
+    float showcase_width = (float)window_width - control_panel_width - diagnostics_width - 4.0f * layout_margin;
+    if (showcase_width < 360.0f)
+    {
+        float deficit = 360.0f - showcase_width;
+        float control_spare = control_panel_width - control_min;
+        float diag_spare = diagnostics_width - diagnostics_min;
+        float take_control = fminf(control_spare, deficit * 0.5f);
+        control_panel_width -= take_control;
+        deficit -= take_control;
+        float take_diag = fminf(diag_spare, deficit);
+        diagnostics_width -= take_diag;
+        deficit -= take_diag;
+        if (deficit > 0.0f)
+        {
+            column_gap = fmaxf(12.0f, column_gap - deficit * 0.5f);
+        }
+        showcase_width = (float)window_width - control_panel_width - diagnostics_width - 2.0f * column_gap - 2.0f * layout_margin;
+        if (showcase_width < 320.0f)
+        {
+            showcase_width = 320.0f;
+        }
+    }
+    else
+    {
+        showcase_width = (float)window_width - control_panel_width - diagnostics_width - 2.0f * column_gap - 2.0f * layout_margin;
+    }
+
+    float panel_x = layout_margin;
+    struct nk_rect panel_bounds = nk_rect(panel_x,
                                           top_offset,
                                           control_panel_width,
                                           usable_height);
 
-    const float mid_column_x = panel_bounds.x + panel_bounds.w + layout_margin;
-    const float right_column_x = mid_column_x + diagnostics_width + layout_margin;
+    const float mid_column_x = panel_bounds.x + panel_bounds.w + column_gap;
+    const float right_column_x = mid_column_x + diagnostics_width + column_gap;
     const float systems_height = fminf(usable_height * 0.42f, 280.0f);
     float quantum_height = usable_height - systems_height - layout_margin;
     if (quantum_height < 220.0f)
@@ -1381,7 +1421,10 @@ void gui_render(struct gui_app *app,
     struct nk_color grad_bottom = nk_rgba(12, 24, 44 + glow_shift, 230);
     struct nk_color grad_bottom_left = nk_rgba(16, 30, 64 + glow_shift, 230);
 
-    struct nk_rect title_bounds = nk_rect(0.0f, 0.0f, (float)window_width, titlebar_height);
+    struct nk_rect title_bounds = nk_rect(layout_margin,
+                                          0.0f,
+                                          (float)window_width - 2.0f * layout_margin,
+                                          titlebar_height);
     nk_style_push_style_item(ctx,
                              &ctx->style.window.fixed_background,
                              nk_style_item_color(nk_rgba(0, 0, 0, 0)));
@@ -1558,9 +1601,9 @@ void gui_render(struct gui_app *app,
     nk_style_pop_color(ctx);
     nk_style_pop_style_item(ctx);
 
-    struct nk_rect status_bounds = nk_rect(0.0f,
+    struct nk_rect status_bounds = nk_rect(layout_margin,
                                            (float)window_height - statusbar_height,
-                                           (float)window_width,
+                                           (float)window_width - 2.0f * layout_margin,
                                            statusbar_height);
     nk_style_push_style_item(ctx,
                              &ctx->style.window.fixed_background,

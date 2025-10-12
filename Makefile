@@ -46,8 +46,8 @@ else
 	endif
 	MKDIR_P = mkdir -p $(1)
 	RM_RF = rm -rf $(1)
-	FETCH_GLFW := ./scripts/fetch_glfw.sh
-	FETCH_NUKLEAR := ./scripts/fetch_nuklear.sh
+	FETCH_GLFW := bash scripts/fetch_glfw.sh
+	FETCH_NUKLEAR := bash scripts/fetch_nuklear.sh
 endif
 
 .PHONY: all clean run test deps

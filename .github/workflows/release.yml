@@ -57,13 +57,29 @@ jobs:
           choco install zip -y
           choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
 
-      - name: Fetch and build
+      - name: Fetch and build (Linux/macOS)
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           set -euo pipefail
           make deps
           make
           make test
+
+      - name: Fetch and build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          .\scripts\fetch_glfw.ps1
+          .\scripts\fetch_nuklear.ps1
+          cmake -S scripts/deps/glfw -B scripts/deps/glfw/build -DBUILD_SHARED_LIBS=OFF `
+            -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_DOCS=OFF
+          cmake --build scripts/deps/glfw/build --config Release
+          cmake -S . -B build/cmake -G "Visual Studio 17 2022" -A x64
+          cmake --build build/cmake --config Release
+          ctest --test-dir build/cmake --config Release --output-on-failure
 
       - name: Package artifact
         shell: bash
@@ -73,6 +89,12 @@ jobs:
           OUTDIR="dist/${{ matrix.artifact }}"
           mkdir -p "$OUTDIR"
           cp build/bin/gw2helper* "$OUTDIR/" || true
+          if [ -f build/cmake/Release/gw2helper.exe ]; then
+            cp build/cmake/Release/gw2helper.exe "$OUTDIR/"
+          fi
+          if [ -f build/cmake/gw2helper ]; then
+            cp build/cmake/gw2helper "$OUTDIR/"
+          fi
           cp README.md LICENSE "$OUTDIR/"
           if [ -f assets/README.md ]; then
             cp assets/README.md "$OUTDIR/"
