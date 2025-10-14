@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import time
+from datetime import date, datetime
 from threading import Thread
 from typing import List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from .. import constants
+from .. import constants, persistence
 from ..automation import tasks
 from ..controllers.task_controller import TaskController
 
@@ -38,7 +39,9 @@ class TitleBar(QtWidgets.QWidget):
         self.min_button = QtWidgets.QToolButton()
         self.min_button.setObjectName("TitleBarButton")
         self.min_button.setText("–")
-        self.min_button.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.min_button.setCursor(
+            QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        )
         self.min_button.setToolTip("Minimize")
         self.min_button.clicked.connect(self._on_minimize)
         layout.addWidget(self.min_button)
@@ -46,7 +49,9 @@ class TitleBar(QtWidgets.QWidget):
         self.close_button = QtWidgets.QToolButton()
         self.close_button.setObjectName("TitleBarButton")
         self.close_button.setText("✕")
-        self.close_button.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.close_button.setCursor(
+            QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        )
         self.close_button.setToolTip("Close")
         self.close_button.clicked.connect(self._on_close)
         layout.addWidget(self.close_button)
@@ -158,14 +163,23 @@ class MainWindow(QtWidgets.QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("MainWindow")
+        self._app_state = persistence.load_app_state()
+        if not isinstance(self._app_state.farmed_characters, dict):
+            self._app_state.farmed_characters = {}
         self._app_start_time = time.monotonic()
         self.controller = TaskController()
+        self._save_state_timer = QtCore.QTimer(self)
+        self._save_state_timer.setSingleShot(True)
+        self._save_state_timer.timeout.connect(self._persist_state)
         self._setup_window()
         self._build_ui()
         self._connect_signals()
         self._load_characters_async()
         self._start_event_timer()
         self._start_uptime_timer()
+        self._refresh_stats_display()
+        self._pause_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F5"), self)
+        self._pause_shortcut.activated.connect(self._toggle_pause)
 
     def _setup_window(self) -> None:
         flags = (
@@ -176,7 +190,15 @@ class MainWindow(QtWidgets.QWidget):
         )
         self.setWindowFlags(flags)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.resize(520, 460)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        width = self._app_state.window_width or 520
+        height = self._app_state.window_height or 460
+        self.resize(width, height)
+        if (
+            self._app_state.window_x is not None
+            and self._app_state.window_y is not None
+        ):
+            self.move(self._app_state.window_x, self._app_state.window_y)
         self.setFont(QtGui.QFont("Segoe UI", 9))
         self._apply_styles()
 
@@ -297,6 +319,31 @@ QCheckBox::indicator:checked {
                                 stop:0 #6d82ff, stop:1 #9b6dff);
     border-color: rgba(148, 175, 255, 0.9);
 }
+#StatPill {
+    background: rgba(33, 40, 66, 0.9);
+    border-radius: 12px;
+    border: 1px solid rgba(120, 140, 210, 0.4);
+    padding: 8px 14px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    color: #dde3ff;
+}
+#StatPill[state="positive"] {
+    border-color: rgba(108, 200, 170, 0.7);
+    color: #9de8c7;
+}
+#StatPill[state="negative"] {
+    border-color: rgba(255, 140, 150, 0.7);
+    color: #ff9fb1;
+}
+#StatPill[state="info"] {
+    border-color: rgba(144, 162, 230, 0.7);
+    color: #c8d5ff;
+}
+#StatPill[state="neutral"] {
+    border-color: rgba(120, 140, 210, 0.4);
+    color: #dde3ff;
+}
 #StatusBar {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                                 stop:0 rgba(36, 44, 80, 0.95),
@@ -381,14 +428,17 @@ QToolTip {
         )
         button_row.addWidget(self.farm_button)
 
-        self.bug_button = QtWidgets.QPushButton("Bug")
+        self.pause_button = QtWidgets.QPushButton("Pause")
+        self.pause_button.setObjectName("PauseButton")
+        self.pause_button.setEnabled(False)
+        self.pause_button.setToolTip("Pause farming (F5)")
         self._apply_soft_shadow(
-            self.bug_button,
-            QtGui.QColor(214, 92, 220, 150),
+            self.pause_button,
+            QtGui.QColor(120, 210, 235, 150),
             blur=30,
             y_offset=16,
         )
-        button_row.addWidget(self.bug_button)
+        button_row.addWidget(self.pause_button)
         button_row.addStretch()
         panel_layout.addLayout(button_row)
 
@@ -402,6 +452,22 @@ QToolTip {
         options_row.addWidget(self.shutdown_checkbox)
         options_row.addStretch()
         panel_layout.addLayout(options_row)
+
+        stats_row = QtWidgets.QHBoxLayout()
+        stats_row.setSpacing(18)
+        self.farmed_today_pill = QtWidgets.QLabel("Farmed Today: No")
+        self.farmed_today_pill.setObjectName("StatPill")
+        self.farmed_today_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.farmed_today_pill.setProperty("state", "negative")
+        stats_row.addWidget(self.farmed_today_pill)
+
+        self.farm_count_pill = QtWidgets.QLabel("Runs Since Empty: 0")
+        self.farm_count_pill.setObjectName("StatPill")
+        self.farm_count_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.farm_count_pill.setProperty("state", "neutral")
+        stats_row.addWidget(self.farm_count_pill)
+        stats_row.addStretch()
+        panel_layout.addLayout(stats_row)
 
         self.status_label = QtWidgets.QLabel("Ready")
         self.status_label.setObjectName("StatusMessage")
@@ -427,13 +493,17 @@ QToolTip {
         widget.setGraphicsEffect(effect)
 
     def _connect_signals(self) -> None:
-        self.farm_button.clicked.connect(self.controller.run_alt_char_farm)
-        self.bug_button.clicked.connect(self.controller.run_skyscale_bug)
+        self.farm_button.clicked.connect(self._on_farm_clicked)
+        self.pause_button.clicked.connect(self._toggle_pause)
         self.character_combo.currentTextChanged.connect(self._on_character_selected)
         self.empty_checkbox.stateChanged.connect(self._handle_empty_checkbox)
         self.shutdown_checkbox.stateChanged.connect(self._handle_shutdown_checkbox)
 
         self.controller.status_changed.connect(self.status_label.setText)
+        self.controller.pause_state_changed.connect(self._on_pause_state_changed)
+        self.controller.farming_started.connect(self._on_farming_started)
+        self.controller.farming_completed.connect(self._on_farming_completed)
+        self.controller.character_progress.connect(self._on_character_progress)
         self.characters_loaded.connect(self._populate_characters)
 
     def _handle_empty_checkbox(self, state: int) -> None:
@@ -443,6 +513,96 @@ QToolTip {
     def _handle_shutdown_checkbox(self, state: int) -> None:
         enabled = state == QtCore.Qt.CheckState.Checked
         self.controller.set_shutdown_enabled(enabled)
+
+    def _on_farm_clicked(self) -> None:
+        self.controller.run_alt_char_farm(
+            should_skip_character=self._is_character_farmed_today
+        )
+
+    def _on_farming_started(self) -> None:
+        self.farm_button.setEnabled(False)
+        self.pause_button.setEnabled(True)
+        self.pause_button.setText("Pause")
+        self.pause_button.setToolTip("Pause farming (F5)")
+        self.setFocus()
+
+    def _on_farming_completed(self, payload: dict) -> None:
+        self.farm_button.setEnabled(True)
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("Pause")
+        self.pause_button.setToolTip("Pause farming (F5)")
+
+        if payload.get("error"):
+            return
+
+        characters_farmed = int(payload.get("characters_farmed", 0) or 0)
+        if characters_farmed > 0:
+            self._app_state.last_farm_date = date.today().isoformat()
+        self._app_state.characters_farmed_last_run = characters_farmed
+
+        if payload.get("emptied"):
+            timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+            self._app_state.last_empty_timestamp = timestamp
+            self._app_state.farm_count_since_empty = 0
+        elif characters_farmed > 0:
+            self._app_state.farm_count_since_empty = (
+                max(0, self._app_state.farm_count_since_empty) + 1
+            )
+
+        if payload.get("stopped_due_to_repeats"):
+            self.status_label.setText(
+                "Stopped early after encountering three characters already farmed today."
+            )
+
+        self._refresh_stats_display()
+        self._schedule_state_save()
+
+    def _on_pause_state_changed(self, paused: bool) -> None:
+        if not self.controller.is_farming_active():
+            self.pause_button.setText("Pause")
+            self.pause_button.setToolTip("Pause farming (F5)")
+            self.pause_button.setEnabled(False)
+            return
+        if paused:
+            self.pause_button.setText("Resume")
+            self.pause_button.setToolTip("Resume farming (F5)")
+        else:
+            self.pause_button.setText("Pause")
+            self.pause_button.setToolTip("Pause farming (F5)")
+
+    def _toggle_pause(self) -> None:
+        if not self.controller.is_farming_active():
+            return
+        self.controller.toggle_pause()
+
+    def _on_character_progress(self, payload: dict) -> None:
+        name = payload.get("name")
+        if not name:
+            return
+        status = payload.get("status")
+        today = date.today().isoformat()
+        if status == "farmed":
+            self._app_state.farmed_characters[name] = today
+        elif status == "skipped-already":
+            # Ensure the record persists for today so restarts continue to skip.
+            if (
+                name not in self._app_state.farmed_characters
+                or self._app_state.farmed_characters[name] != today
+            ):
+                self._app_state.farmed_characters[name] = today
+
+        self._refresh_stats_display()
+        self._schedule_state_save()
+
+    def _is_character_farmed_today(self, name: str) -> bool:
+        today = date.today().isoformat()
+        return self._app_state.farmed_characters.get(name) == today
+
+    def _characters_farmed_today_count(self) -> int:
+        today = date.today().isoformat()
+        return sum(
+            1 for value in self._app_state.farmed_characters.values() if value == today
+        )
 
     def _load_characters_async(self) -> None:
         def worker() -> None:
@@ -467,7 +627,12 @@ QToolTip {
         self.character_combo.blockSignals(False)
 
     def _on_character_selected(self, name: str) -> None:
-        if name in {"", "Loading characters...", "Select a Character", "No characters found"}:
+        if name in {
+            "",
+            "Loading characters...",
+            "Select a Character",
+            "No characters found",
+        }:
             return
         self.status_label.setText(f"Character {name} selected")
         self.banner_label.set_message(f"Character {name} selected", scroll=True)
@@ -496,9 +661,78 @@ QToolTip {
         elapsed = int(time.monotonic() - self._app_start_time)
         hours, remainder = divmod(elapsed, 3600)
         minutes, seconds = divmod(remainder, 60)
-        self.status_bar.set_uptime(
-            f"Uptime {hours:02}:{minutes:02}:{seconds:02}"
+        self.status_bar.set_uptime(f"Uptime {hours:02}:{minutes:02}:{seconds:02}")
+
+    def _refresh_stats_display(self) -> None:
+        farmed_today = self._characters_farmed_today_count() > 0
+        farm_text = "Farmed Today: Yes" if farmed_today else "Farmed Today: No"
+        farm_state = "positive" if farmed_today else "negative"
+        self._set_pill_state(self.farmed_today_pill, farm_text, farm_state)
+        if self._app_state.last_farm_date:
+            self.farmed_today_pill.setToolTip(
+                f"Last farm date: {self._app_state.last_farm_date}"
+            )
+        else:
+            self.farmed_today_pill.setToolTip("No farming sessions recorded yet.")
+
+        runs = max(0, self._app_state.farm_count_since_empty)
+        unique_today = self._characters_farmed_today_count()
+        runs_text = f"Runs Since Empty: {runs}"
+        runs_state = "info" if runs else "neutral"
+        self._set_pill_state(self.farm_count_pill, runs_text, runs_state)
+
+        tooltip_parts: List[str] = []
+        if self._app_state.last_empty_timestamp:
+            tooltip_parts.append(
+                f"Last emptied: {self._app_state.last_empty_timestamp}"
+            )
+        if self._app_state.characters_farmed_last_run:
+            tooltip_parts.append(
+                f"Previous run farmed {self._app_state.characters_farmed_last_run} characters"
+            )
+        tooltip_parts.append(f"Characters farmed today: {unique_today}")
+        self.farm_count_pill.setToolTip(
+            " | ".join(tooltip_parts) if tooltip_parts else "No emptying recorded yet."
         )
+
+    def _set_pill_state(self, label: QtWidgets.QLabel, text: str, state: str) -> None:
+        label.setText(text)
+        label.setProperty("state", state)
+        label.style().unpolish(label)
+        label.style().polish(label)
+        label.update()
+
+    def _schedule_state_save(self) -> None:
+        self._save_state_timer.start(750)
+
+    def _persist_state(self) -> None:
+        self._save_state_timer.stop()
+        persistence.save_app_state(self._app_state)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # type: ignore[override]
+        if event.key() == QtCore.Qt.Key.Key_F5:
+            self._toggle_pause()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def moveEvent(self, event: QtGui.QMoveEvent) -> None:  # type: ignore[override]
+        super().moveEvent(event)
+        top_left = self.frameGeometry().topLeft()
+        self._app_state.window_x = int(top_left.x())
+        self._app_state.window_y = int(top_left.y())
+        self._schedule_state_save()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        size = event.size()
+        self._app_state.window_width = int(size.width())
+        self._app_state.window_height = int(size.height())
+        self._schedule_state_save()
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[override]
+        self._persist_state()
+        super().closeEvent(event)
 
 
 def create_window() -> MainWindow:

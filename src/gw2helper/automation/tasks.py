@@ -562,7 +562,20 @@ def look_for_char(char_name: str) -> None:
             autoit.send("{RIGHT}")
 
 
-def alt_char_farm(update_status: Callable[[str], None]) -> None:
+def alt_char_farm(
+    update_status: Callable[[str], None],
+    pause_event: Event,
+    completion_callback: Optional[Callable[[dict], None]] = None,
+    should_skip_character: Optional[Callable[[str], bool]] = None,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> None:
+    def wait_if_paused() -> None:
+        if pause_event.is_set():
+            return
+        pause_event.wait()
+        autoit.win_activate("Guild Wars 2")
+        time.sleep(0.2)
+
     login_counter = 0
     autoit.win_activate("Guild Wars 2")
     if not is_in_char_select_screen():
@@ -576,7 +589,14 @@ def alt_char_farm(update_status: Callable[[str], None]) -> None:
             if is_in_char_select_screen():
                 break
     character_list = get_character_list()
+    processed_characters = 0
+    emptied_any_character = False
+    skipped_characters = 0
+    consecutive_already = 0
+    stop_after_logout = False
+    stopped_due_to_repeats = False
     while character_list:
+        wait_if_paused()
         empty_this_char = True
         login_counter += 1
         autoit.mouse_click("left", 3727, 2058, 2, 0)
@@ -595,6 +615,7 @@ def alt_char_farm(update_status: Callable[[str], None]) -> None:
             autoit.mouse_click("left", 3380, 2062, 2, 0)
         login_attempt_counter = 0
         while True:
+            wait_if_paused()
             if not is_in_char_select_screen():
                 time.sleep(1)
                 break
@@ -605,13 +626,52 @@ def alt_char_farm(update_status: Callable[[str], None]) -> None:
                 autoit.mouse_click("left", 3610, 2062, 2, 0)
         char_name = char_get_name()
         character_list = remove_from_list(character_list, char_name)
+        already_farmed = False
+        if should_skip_character is not None:
+            try:
+                already_farmed = bool(should_skip_character(char_name))
+            except Exception:
+                already_farmed = False
         for skip in constants.CHARS_TO_SKIP:
             if skip in char_name:
                 empty_this_char = False
-        autoit.send("f")
-        time.sleep(1)
-        if empty_this_char and constants.EMPTY_CHARS:
-            empty_out_character()
+        if already_farmed:
+            skipped_characters += 1
+            consecutive_already += 1
+            update_status(f"{char_name} already farmed today; skipping.")
+            time.sleep(1)
+            if progress_callback is not None:
+                try:
+                    progress_callback({"name": char_name, "status": "skipped-already"})
+                except Exception:
+                    pass
+            if consecutive_already >= 3:
+                update_status(
+                    "Stopping early: encountered three characters already farmed today."
+                )
+                stop_after_logout = True
+                stopped_due_to_repeats = True
+        else:
+            consecutive_already = 0
+            wait_if_paused()
+            autoit.send("f")
+            time.sleep(1)
+            if empty_this_char and constants.EMPTY_CHARS:
+                wait_if_paused()
+                empty_out_character()
+                emptied_any_character = True
+            processed_characters += 1
+            if progress_callback is not None:
+                try:
+                    progress_callback(
+                        {
+                            "name": char_name,
+                            "status": "farmed",
+                            "emptied": bool(empty_this_char and constants.EMPTY_CHARS),
+                        }
+                    )
+                except Exception:
+                    pass
         chars_left = len(character_list)
         update_status(f"{chars_left} left to farm.")
         autoit.mouse_click("left", 18, 18, 1, 0)
@@ -621,6 +681,7 @@ def alt_char_farm(update_status: Callable[[str], None]) -> None:
         autoit.mouse_click("left", 1906, 1143, 1, 0)
         log_out_counter = 0
         while True:
+            wait_if_paused()
             time.sleep(0.25)
             log_out_counter += 1
             if log_out_counter > 30:
@@ -631,13 +692,27 @@ def alt_char_farm(update_status: Callable[[str], None]) -> None:
                 autoit.mouse_click("left", 1906, 1143, 1, 0)
             if is_in_char_select_screen():
                 break
+        if stop_after_logout:
+            break
     for _ in range(3):
         play_beep()
         time.sleep(0.5)
+    update_status("Farming done.")
     if constants.SHUTDOWN:
         autoit.shutdown(1)
         send_message("Shutdown successfully.")
-        update_status("Farming done.")
+    if completion_callback is not None:
+        try:
+            completion_callback(
+                {
+                    "characters_farmed": processed_characters,
+                    "emptied": emptied_any_character,
+                    "skipped_characters": skipped_characters,
+                    "stopped_due_to_repeats": stopped_due_to_repeats,
+                }
+            )
+        except Exception:
+            pass
 
 
 def clipboard_event_code() -> Optional[str]:
