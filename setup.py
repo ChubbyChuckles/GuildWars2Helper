@@ -8,6 +8,7 @@ build_exe_options = {
     "packages": ["gw2helper", "PyQt6"],
     "includes": [],
     "include_files": [],
+    "path": ["src"],
 }
 
 setup(

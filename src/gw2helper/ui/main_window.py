@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
+import sys
 import time
 from datetime import date, datetime
 from threading import Thread
@@ -12,6 +15,57 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from .. import constants, persistence
 from ..automation import tasks
 from ..controllers.task_controller import TaskController
+
+
+if sys.platform == "win32":
+
+    class _F5Hotkey(QtCore.QObject, QtCore.QAbstractNativeEventFilter):
+        triggered = QtCore.pyqtSignal()
+
+        _WM_HOTKEY = 0x0312
+        _MOD_NOREPEAT = 0x4000
+        _VK_F5 = 0x74
+
+        def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
+            super().__init__(parent)
+            self._id = 1
+            self._user32 = ctypes.windll.user32
+            self._registered = False
+            self._installed = False
+            app = QtWidgets.QApplication.instance()
+            if app is None:
+                return
+            if self._user32.RegisterHotKey(
+                None, self._id, self._MOD_NOREPEAT, self._VK_F5
+            ):
+                self._registered = True
+                app.installNativeEventFilter(self)
+                self._installed = True
+
+        def nativeEventFilter(self, event_type: str, message: int) -> tuple[bool, int]:
+            if not self._installed or event_type != "windows_generic_MSG":
+                return False, 0
+            msg = wintypes.MSG.from_address(int(message))
+            if msg.message == self._WM_HOTKEY and msg.wParam == self._id:
+                self.triggered.emit()
+                return True, 0
+            return False, 0
+
+        def dispose(self) -> None:
+            app = QtWidgets.QApplication.instance()
+            if self._installed and app is not None:
+                app.removeNativeEventFilter(self)
+                self._installed = False
+            if self._registered:
+                self._user32.UnregisterHotKey(None, self._id)
+                self._registered = False
+
+        @property
+        def is_registered(self) -> bool:
+            return self._registered
+
+else:
+    _F5Hotkey = None  # type: ignore[assignment]
 
 
 class TitleBar(QtWidgets.QWidget):
@@ -179,7 +233,9 @@ class MainWindow(QtWidgets.QWidget):
         self._start_uptime_timer()
         self._refresh_stats_display()
         self._pause_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F5"), self)
+        self._pause_shortcut.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
         self._pause_shortcut.activated.connect(self._toggle_pause)
+        self._global_hotkey = self._create_global_hotkey()
 
     def _setup_window(self) -> None:
         flags = (
@@ -575,6 +631,19 @@ QToolTip {
             return
         self.controller.toggle_pause()
 
+    def _create_global_hotkey(self):
+        if _F5Hotkey is None or sys.platform != "win32":
+            return None
+        try:
+            hotkey = _F5Hotkey(self)
+        except Exception:
+            return None
+        if getattr(hotkey, "is_registered", False):
+            hotkey.triggered.connect(self._toggle_pause)
+            return hotkey
+        hotkey.dispose()
+        return None
+
     def _on_character_progress(self, payload: dict) -> None:
         name = payload.get("name")
         if not name:
@@ -731,6 +800,9 @@ QToolTip {
         self._schedule_state_save()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[override]
+        if hasattr(self, "_global_hotkey") and self._global_hotkey is not None:
+            self._global_hotkey.dispose()
+            self._global_hotkey = None
         self._persist_state()
         super().closeEvent(event)
 
