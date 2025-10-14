@@ -19,7 +19,7 @@ import pyperclip
 import pytesseract
 from PIL import Image
 
-from ..constants import CHARS_TO_SKIP, EMPTY_CHARS, SHUTDOWN
+from .. import constants
 from ..services.arc_client import is_in_char_select_screen
 from ..services.mumble import MumbleLink
 from ..services.notifications import play_beep, send_message
@@ -584,9 +584,9 @@ def alt_char_farm(update_status: Callable[[str], None]) -> None:
         autoit.mouse_click("left", 3727, 2058, 2, 0)
         time.sleep(2.5)
         if login_counter % 20 == 0:
-            time.sleep(15 if EMPTY_CHARS else 180)
+            time.sleep(15 if constants.EMPTY_CHARS else 180)
         elif login_counter % 10 == 0:
-            time.sleep(15 if EMPTY_CHARS else 60)
+            time.sleep(15 if constants.EMPTY_CHARS else 60)
         if login_counter % 3 == 1:
             autoit.mouse_click("left", 3610, 2062, 2, 0)
         elif login_counter % 3 == 2:
@@ -605,12 +605,12 @@ def alt_char_farm(update_status: Callable[[str], None]) -> None:
                 autoit.mouse_click("left", 3610, 2062, 2, 0)
         char_name = char_get_name()
         character_list = remove_from_list(character_list, char_name)
-        for skip in CHARS_TO_SKIP:
+        for skip in constants.CHARS_TO_SKIP:
             if skip in char_name:
                 empty_this_char = False
         autoit.send("f")
         time.sleep(1)
-        if empty_this_char and EMPTY_CHARS:
+        if empty_this_char and constants.EMPTY_CHARS:
             empty_out_character()
         chars_left = len(character_list)
         update_status(f"{chars_left} left to farm.")
@@ -634,7 +634,7 @@ def alt_char_farm(update_status: Callable[[str], None]) -> None:
     for _ in range(3):
         play_beep()
         time.sleep(0.5)
-    if SHUTDOWN:
+    if constants.SHUTDOWN:
         autoit.shutdown(1)
         send_message("Shutdown successfully.")
         update_status("Farming done.")
