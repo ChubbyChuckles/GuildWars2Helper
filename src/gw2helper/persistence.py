@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -21,20 +21,30 @@ class AppState:
     last_farm_date: Optional[str] = None
     farm_count_since_empty: int = 0
     characters_farmed_last_run: int = 0
-    farmed_characters: Dict[str, str] = field(default_factory=dict)
+    farmed_characters: Dict[str, Dict[str, Optional[str]]] = field(default_factory=dict)
+    last_total_characters: int = 0
+    last_remaining_characters: int = 0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppState":
         window = data.get("window", {})
         stats = data.get("stats", {})
         raw_characters = stats.get("farmed_characters", {})
-        farmed_characters: Dict[str, str] = {}
+        farmed_characters: Dict[str, Dict[str, Optional[str]]] = {}
         if isinstance(raw_characters, dict):
             for key, value in raw_characters.items():
                 name = str(key)
-                value_str = _coerce_str(value)
-                if value_str:
-                    farmed_characters[name] = value_str
+                if isinstance(value, dict):
+                    reset_key = _coerce_str(value.get("reset_key"))
+                    timestamp = _coerce_str(value.get("timestamp"))
+                else:
+                    reset_key = _coerce_str(value)
+                    timestamp = None
+                if reset_key:
+                    farmed_characters[name] = {
+                        "reset_key": reset_key,
+                        "timestamp": timestamp,
+                    }
 
         return cls(
             window_x=_coerce_int(window.get("x")),
@@ -50,6 +60,11 @@ class AppState:
             )
             or 0,
             farmed_characters=farmed_characters,
+            last_total_characters=_coerce_int(stats.get("last_total_characters")) or 0,
+            last_remaining_characters=_coerce_int(
+                stats.get("last_remaining_characters")
+            )
+            or 0,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -67,6 +82,8 @@ class AppState:
                 "farm_count_since_empty": data["farm_count_since_empty"],
                 "characters_farmed_last_run": data["characters_farmed_last_run"],
                 "farmed_characters": data["farmed_characters"],
+                "last_total_characters": data["last_total_characters"],
+                "last_remaining_characters": data["last_remaining_characters"],
             },
         }
 

@@ -6,16 +6,15 @@ import ctypes
 from ctypes import wintypes
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from threading import Thread
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from .. import constants, persistence
 from ..automation import tasks
 from ..controllers.task_controller import TaskController
-
 
 if sys.platform == "win32":
 
@@ -26,24 +25,42 @@ if sys.platform == "win32":
         _MOD_NOREPEAT = 0x4000
         _VK_F5 = 0x74
 
-        def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
-            super().__init__(parent)
+        def __init__(self, window: QtWidgets.QWidget) -> None:
+            super().__init__(window)
+            self._window = window
             self._id = 1
             self._user32 = ctypes.windll.user32
-            self._registered = False
             self._installed = False
+            self._registered = False
+            self._hwnd: Optional[int] = None
+
+        def register(self) -> bool:
+            if self._registered:
+                return True
+            hwnd = int(self._window.winId())
+            if not hwnd:
+                return False
+            if not self._user32.RegisterHotKey(
+                hwnd,
+                self._id,
+                self._MOD_NOREPEAT,
+                self._VK_F5,
+            ):
+                return False
             app = QtWidgets.QApplication.instance()
             if app is None:
-                return
-            if self._user32.RegisterHotKey(
-                None, self._id, self._MOD_NOREPEAT, self._VK_F5
-            ):
-                self._registered = True
-                app.installNativeEventFilter(self)
-                self._installed = True
+                self._user32.UnregisterHotKey(hwnd, self._id)
+                return False
+            app.installNativeEventFilter(self)
+            self._installed = True
+            self._registered = True
+            self._hwnd = hwnd
+            return True
 
         def nativeEventFilter(self, event_type: str, message: int) -> tuple[bool, int]:
-            if not self._installed or event_type != "windows_generic_MSG":
+            if not self._registered:
+                return False, 0
+            if event_type not in {"windows_generic_MSG", "windows_dispatcher_MSG"}:
                 return False, 0
             msg = wintypes.MSG.from_address(int(message))
             if msg.message == self._WM_HOTKEY and msg.wParam == self._id:
@@ -52,13 +69,15 @@ if sys.platform == "win32":
             return False, 0
 
         def dispose(self) -> None:
-            app = QtWidgets.QApplication.instance()
-            if self._installed and app is not None:
-                app.removeNativeEventFilter(self)
+            if self._installed:
+                app = QtWidgets.QApplication.instance()
+                if app is not None:
+                    app.removeNativeEventFilter(self)
                 self._installed = False
-            if self._registered:
-                self._user32.UnregisterHotKey(None, self._id)
+            if self._registered and self._hwnd is not None:
+                self._user32.UnregisterHotKey(self._hwnd, self._id)
                 self._registered = False
+                self._hwnd = None
 
         @property
         def is_registered(self) -> bool:
@@ -220,11 +239,20 @@ class MainWindow(QtWidgets.QWidget):
         self._app_state = persistence.load_app_state()
         if not isinstance(self._app_state.farmed_characters, dict):
             self._app_state.farmed_characters = {}
+        self._reset_tz = timezone(timedelta(hours=2))
+        self._prune_stale_farmed_characters()
         self._app_start_time = time.monotonic()
         self.controller = TaskController()
         self._save_state_timer = QtCore.QTimer(self)
         self._save_state_timer.setSingleShot(True)
         self._save_state_timer.timeout.connect(self._persist_state)
+        self._total_characters = max(0, self._app_state.last_total_characters)
+        self._remaining_characters = max(0, self._app_state.last_remaining_characters)
+        self._remaining_characters = min(
+            self._remaining_characters,
+            max(0, self._total_characters - self._characters_farmed_today_count()),
+        )
+        self._app_state.last_remaining_characters = self._remaining_characters
         self._setup_window()
         self._build_ui()
         self._connect_signals()
@@ -562,6 +590,85 @@ QToolTip {
         self.controller.character_progress.connect(self._on_character_progress)
         self.characters_loaded.connect(self._populate_characters)
 
+    def _load_characters_async(self) -> None:
+        def worker() -> None:
+            try:
+                characters = tasks.get_character_list()
+            except Exception:
+                characters = []
+            self.characters_loaded.emit(characters)
+
+        Thread(target=worker, daemon=True).start()
+
+    def _populate_characters(self, characters: list[str]) -> None:
+        names = [name for name in characters if isinstance(name, str) and name]
+        self.character_combo.blockSignals(True)
+        self.character_combo.clear()
+        if not names:
+            self.character_combo.addItem("No characters found")
+            self.character_combo.setEnabled(False)
+            self.status_label.setText("Unable to load characters from the API.")
+            self._set_remaining_characters(0)
+        else:
+            self.character_combo.addItem("Select a Character")
+            for name in names:
+                self.character_combo.addItem(name)
+            self.character_combo.setEnabled(True)
+            self.status_label.setText(f"Loaded {len(names)} characters.")
+            self._set_remaining_characters(len(names))
+        self.character_combo.blockSignals(False)
+        self._refresh_stats_display()
+        self._schedule_state_save()
+
+    def _is_character_farmed_today(self, name: str) -> bool:
+        if not name:
+            return False
+        record = self._app_state.farmed_characters.get(name)
+        if not isinstance(record, dict):
+            return False
+        return record.get("reset_key") == self._current_reset_key()
+
+    def _characters_farmed_today_count(self) -> int:
+        current_key = self._current_reset_key()
+        return sum(
+            1
+            for record in self._app_state.farmed_characters.values()
+            if isinstance(record, dict) and record.get("reset_key") == current_key
+        )
+
+    def _set_remaining_characters(self, total: int) -> None:
+        self._total_characters = max(0, total)
+        farmed_today = self._characters_farmed_today_count()
+        self._remaining_characters = max(0, self._total_characters - farmed_today)
+        self._app_state.last_total_characters = self._total_characters
+        self._app_state.last_remaining_characters = self._remaining_characters
+
+    def _utc_timestamp(self) -> str:
+        return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+    def _current_reset_key(self) -> str:
+        now_local = datetime.now(self._reset_tz)
+        reset_time = now_local.replace(hour=2, minute=0, second=0, microsecond=0)
+        if now_local < reset_time:
+            reset_time -= timedelta(days=1)
+        return reset_time.date().isoformat()
+
+    def _prune_stale_farmed_characters(self) -> None:
+        current_key = self._current_reset_key()
+        stale = [
+            name
+            for name, record in self._app_state.farmed_characters.items()
+            if not isinstance(record, dict) or record.get("reset_key") != current_key
+        ]
+        for name in stale:
+            self._app_state.farmed_characters.pop(name, None)
+        if stale:
+            retained_total = max(0, self._app_state.last_total_characters)
+            farmed_today = self._characters_farmed_today_count()
+            self._app_state.last_remaining_characters = max(
+                0, retained_total - farmed_today
+            )
+
     def _handle_empty_checkbox(self, state: int) -> None:
         enabled = state == QtCore.Qt.CheckState.Checked
         self.controller.set_empty_chars_enabled(enabled)
@@ -638,62 +745,51 @@ QToolTip {
             hotkey = _F5Hotkey(self)
         except Exception:
             return None
-        if getattr(hotkey, "is_registered", False):
-            hotkey.triggered.connect(self._toggle_pause)
-            return hotkey
-        hotkey.dispose()
-        return None
+        hotkey.triggered.connect(self._toggle_pause)
+        return hotkey
 
     def _on_character_progress(self, payload: dict) -> None:
-        name = payload.get("name")
+        name_raw = payload.get("name")
+        name = str(name_raw).strip() if name_raw else ""
         if not name:
             return
-        status = payload.get("status")
-        today = date.today().isoformat()
+
+        status = str(payload.get("status") or "").lower()
+        current_key = self._current_reset_key()
+
         if status == "farmed":
-            self._app_state.farmed_characters[name] = today
+            self._app_state.farmed_characters[name] = {
+                "reset_key": current_key,
+                "timestamp": self._utc_timestamp(),
+            }
+        elif (
+            status == "skipped-already"
+            and name not in self._app_state.farmed_characters
+        ):
+            self._app_state.farmed_characters[name] = {
+                "reset_key": current_key,
+                "timestamp": None,
+            }
+
+        self._set_remaining_characters(self._total_characters)
+        remaining = self._remaining_characters
+        total = self._total_characters
+
+        if status == "farmed":
+            emptied = bool(payload.get("emptied"))
+            suffix = " and emptied" if emptied else ""
+            self.status_label.setText(
+                f"{name} farmed{suffix}. {remaining} of {total} remaining."
+            )
         elif status == "skipped-already":
-            # Ensure the record persists for today so restarts continue to skip.
-            if (
-                name not in self._app_state.farmed_characters
-                or self._app_state.farmed_characters[name] != today
-            ):
-                self._app_state.farmed_characters[name] = today
+            self.status_label.setText(
+                f"{name} already farmed this reset. {remaining} of {total} remaining."
+            )
+        else:
+            self.status_label.setText(f"{name}: {payload.get('status', 'updated')}")
 
         self._refresh_stats_display()
         self._schedule_state_save()
-
-    def _is_character_farmed_today(self, name: str) -> bool:
-        today = date.today().isoformat()
-        return self._app_state.farmed_characters.get(name) == today
-
-    def _characters_farmed_today_count(self) -> int:
-        today = date.today().isoformat()
-        return sum(
-            1 for value in self._app_state.farmed_characters.values() if value == today
-        )
-
-    def _load_characters_async(self) -> None:
-        def worker() -> None:
-            characters: List[str]
-            try:
-                characters = tasks.get_character_list()
-            except Exception:
-                characters = []
-            self.characters_loaded.emit(characters)
-
-        Thread(target=worker, daemon=True).start()
-
-    def _populate_characters(self, characters: List[str]) -> None:
-        self.character_combo.blockSignals(True)
-        self.character_combo.clear()
-        if not characters:
-            self.character_combo.addItem("No characters found")
-        else:
-            self.character_combo.addItem("Select a Character")
-            for name in characters:
-                self.character_combo.addItem(name)
-        self.character_combo.blockSignals(False)
 
     def _on_character_selected(self, name: str) -> None:
         if name in {
@@ -784,6 +880,14 @@ QToolTip {
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if self._global_hotkey is not None and not self._global_hotkey.is_registered:
+            if not self._global_hotkey.register():
+                self.status_label.setText(
+                    "Global F5 hotkey unavailable; using in-app shortcut only."
+                )
 
     def moveEvent(self, event: QtGui.QMoveEvent) -> None:  # type: ignore[override]
         super().moveEvent(event)
