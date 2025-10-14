@@ -11,7 +11,18 @@ from threading import Event
 from timeit import default_timer as timer
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
-import autoit
+try:
+    import autoit
+except ModuleNotFoundError as _autoit_err:  # pragma: no cover - packaging safeguard
+
+    class _AutoItStub:
+        def __getattr__(self, name: str):
+            raise RuntimeError(
+                "The 'autoit' module is required for automation routines. "
+                "Install the PyAutoIt package to enable in-game interactions."
+            ) from _autoit_err
+
+    autoit = _AutoItStub()  # type: ignore[assignment]
 import cv2
 import numpy as np
 import pyautogui
