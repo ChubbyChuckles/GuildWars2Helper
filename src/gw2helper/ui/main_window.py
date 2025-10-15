@@ -550,6 +550,12 @@ QToolTip {
         self.farm_count_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.farm_count_pill.setProperty("state", "neutral")
         stats_row.addWidget(self.farm_count_pill)
+
+        self.farmed_count_pill = QtWidgets.QLabel("Characters Farmed Today: 0")
+        self.farmed_count_pill.setObjectName("StatPill")
+        self.farmed_count_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.farmed_count_pill.setProperty("state", "neutral")
+        stats_row.addWidget(self.farmed_count_pill)
         stats_row.addStretch()
         panel_layout.addLayout(stats_row)
 
@@ -829,7 +835,8 @@ QToolTip {
         self.status_bar.set_uptime(f"Uptime {hours:02}:{minutes:02}:{seconds:02}")
 
     def _refresh_stats_display(self) -> None:
-        farmed_today = self._characters_farmed_today_count() > 0
+        unique_today = self._characters_farmed_today_count()
+        farmed_today = unique_today > 0
         farm_text = "Farmed Today: Yes" if farmed_today else "Farmed Today: No"
         farm_state = "positive" if farmed_today else "negative"
         self._set_pill_state(self.farmed_today_pill, farm_text, farm_state)
@@ -841,10 +848,18 @@ QToolTip {
             self.farmed_today_pill.setToolTip("No farming sessions recorded yet.")
 
         runs = max(0, self._app_state.farm_count_since_empty)
-        unique_today = self._characters_farmed_today_count()
         runs_text = f"Runs Since Empty: {runs}"
         runs_state = "info" if runs else "neutral"
         self._set_pill_state(self.farm_count_pill, runs_text, runs_state)
+
+        total_known = self._total_characters or self._app_state.last_total_characters
+        remaining = max(0, self._remaining_characters)
+        if total_known:
+            count_text = f"Characters Farmed Today: {unique_today}/{total_known}"
+        else:
+            count_text = f"Characters Farmed Today: {unique_today}"
+        count_state = "info" if unique_today else "neutral"
+        self._set_pill_state(self.farmed_count_pill, count_text, count_state)
 
         tooltip_parts: List[str] = []
         if self._app_state.last_empty_timestamp:
@@ -859,6 +874,13 @@ QToolTip {
         self.farm_count_pill.setToolTip(
             " | ".join(tooltip_parts) if tooltip_parts else "No emptying recorded yet."
         )
+
+        count_tooltip_bits = [f"Characters farmed today: {unique_today}"]
+        if total_known:
+            count_tooltip_bits.append(f"Tracked roster size: {total_known}")
+        count_tooltip_bits.append(f"Remaining characters: {remaining}")
+        count_tooltip_bits.append("Daily reset enforced at 02:00 GMT+2")
+        self.farmed_count_pill.setToolTip(" | ".join(count_tooltip_bits))
 
     def _set_pill_state(self, label: QtWidgets.QLabel, text: str, state: str) -> None:
         label.setText(text)
