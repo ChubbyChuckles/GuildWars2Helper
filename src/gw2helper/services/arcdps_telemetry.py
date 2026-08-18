@@ -6,13 +6,14 @@ import socket
 import struct
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import Callable, Mapping, Optional
 
 import psutil
 
 from .gw2_api import Gw2ApiClient, SkillMetadata
+from .mumble import MumbleLinkMotionTracker
 
 _BHUD_UI_MESSAGE = 1
 _BHUD_COMBAT_MESSAGE = 2
@@ -148,6 +149,15 @@ class SkillCooldown:
 
 
 @dataclass(frozen=True)
+class SkillActivation:
+    """A recent self-originated animation start observed by ArcDPS."""
+
+    skill_id: int
+    activated_at: float
+    sequence: int
+
+
+@dataclass(frozen=True)
 class CombatTelemetrySnapshot:
     bridge_status: str
     character_loaded: Optional[bool]
@@ -159,6 +169,8 @@ class CombatTelemetrySnapshot:
     last_skill_id: Optional[int] = None
     skill_activation_sequence: int = 0
     last_skill_activated_at: Optional[float] = None
+    skill_activations: tuple[SkillActivation, ...] = ()
+    player_moving: bool = False
 
 
 @dataclass
@@ -335,6 +347,7 @@ class ArcDpsCombatMonitor:
         hud_supplier: Optional[Callable[[], Mapping[str, object]]] = None,
         skill_lookup: Optional[Callable[[int], Optional[SkillMetadata]]] = None,
         process_id_supplier: Optional[Callable[[], Optional[int]]] = None,
+        movement_supplier: Optional[Callable[[], bool]] = None,
         clock: Callable[[], float] = time.monotonic,
         asynchronous_skill_lookup: bool = True,
     ) -> None:
@@ -342,6 +355,14 @@ class ArcDpsCombatMonitor:
         self._skill_lookup = skill_lookup or _lookup_skill_metadata
         self._process_id_supplier = process_id_supplier or _find_gw2_process_id
         self._clock = clock
+        self._motion_tracker = (
+            None if movement_supplier is not None else MumbleLinkMotionTracker(clock=clock)
+        )
+        self._movement_supplier = (
+            movement_supplier
+            if movement_supplier is not None
+            else self._motion_tracker.is_moving
+        )
         self._asynchronous_skill_lookup = asynchronous_skill_lookup
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -360,6 +381,8 @@ class ArcDpsCombatMonitor:
         self._last_skill_id: Optional[int] = None
         self._skill_activation_sequence = 0
         self._last_skill_activated_at: Optional[float] = None
+        self._skill_activations: deque[SkillActivation] = deque(maxlen=32)
+        self._player_moving = False
         self._skill_lookups_in_progress: set[int] = set()
         self._seen_event_ids: OrderedDict[
             tuple[int, int, int, int, int, int, int],
@@ -378,6 +401,8 @@ class ArcDpsCombatMonitor:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
         self._thread = None
+        if self._motion_tracker is not None:
+            self._motion_tracker.close()
 
     def snapshot(self) -> CombatTelemetrySnapshot:
         with self._lock:
@@ -394,6 +419,8 @@ class ArcDpsCombatMonitor:
                 last_skill_id=self._last_skill_id,
                 skill_activation_sequence=self._skill_activation_sequence,
                 last_skill_activated_at=self._last_skill_activated_at,
+                skill_activations=tuple(self._skill_activations),
+                player_moving=self._player_moving,
             )
 
     def ingest_payload(self, payload: bytes) -> None:
@@ -411,7 +438,9 @@ class ArcDpsCombatMonitor:
             self._hud_ready = {
                 str(key): bool(value)
                 for key, value in status.items()
-                if not str(key).startswith("buff:")
+                if not str(key).startswith(
+                    ("buff:", "resource:", "target:", "weapon_set:", "player:")
+                )
             }
             self._hud_buffs = {
                 str(key).removeprefix("buff:"): bool(value)
@@ -424,6 +453,7 @@ class ArcDpsCombatMonitor:
                 self._weapon_set = "focus"
             elif bool(status.get("weapon_set:sword", False)):
                 self._weapon_set = "sword"
+            self._player_moving = bool(status.get("player:moving", False))
 
     def _run(self) -> None:
         next_hud_scan = 0.0
@@ -435,6 +465,7 @@ class ArcDpsCombatMonitor:
                 except Exception:
                     readiness = {}
                 self.update_hud_status(readiness)
+                self._refresh_player_movement()
                 next_hud_scan = now + _HUD_SCAN_SECONDS
 
             process_id = self._process_id_supplier()
@@ -470,6 +501,7 @@ class ArcDpsCombatMonitor:
                 except Exception:
                     readiness = {}
                 self.update_hud_status(readiness)
+                self._refresh_player_movement()
                 next_hud_scan = now + _HUD_SCAN_SECONDS
             try:
                 chunk = stream.recv(4096)
@@ -514,6 +546,14 @@ class ArcDpsCombatMonitor:
             self._remove_single_buff(event, message)
         elif event.statechange == _CBTS_BUFFREMOVE_ALL and self._is_self_source(event, message):
             self._buffs.pop(event.skill_id, None)
+
+    def _refresh_player_movement(self) -> None:
+        try:
+            moving = bool(self._movement_supplier())
+        except Exception:
+            moving = False
+        with self._lock:
+            self._player_moving = moving
 
     def _is_duplicate_event(self, event: ArcDpsCombatEvent) -> bool:
         key = (
@@ -560,6 +600,13 @@ class ArcDpsCombatMonitor:
         self._last_skill_id = event.skill_id
         self._skill_activation_sequence += 1
         self._last_skill_activated_at = activated_at
+        self._skill_activations.append(
+            SkillActivation(
+                skill_id=event.skill_id,
+                activated_at=activated_at,
+                sequence=self._skill_activation_sequence,
+            )
+        )
         self._skill_records[event.skill_id] = _SkillRecord(
             skill_id=event.skill_id,
             activated_at=activated_at,

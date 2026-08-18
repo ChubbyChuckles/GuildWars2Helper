@@ -64,6 +64,40 @@ class RotationAssetTests(unittest.TestCase):
         self.assertEqual(capture_path.name, "skills.png")
         self.assertEqual(capture_path.parent.name, "GuildWars2Helper")
 
+    def test_focus_weapon_set_is_detected_from_ready_weapon_five(self) -> None:
+        screenshot = unittest.mock.Mock()
+
+        def find_template(_screenshot_path: str, template: str) -> list[tuple[int, int]]:
+            return [(0, 0)] if template == "skill_5_focus.png" else []
+
+        with (
+            patch.object(tasks, "take_screenshot", return_value=screenshot),
+            patch.object(tasks, "_capture_path", return_value="combat_hud.png"),
+            patch.object(tasks, "find_image_in_image", side_effect=find_template),
+            patch.object(tasks, "is_cc_bar", return_value=False),
+        ):
+            status = tasks.read_combat_hud_status()
+
+        self.assertTrue(status["Weapon_5"])
+        self.assertTrue(status["weapon_set:focus"])
+        self.assertFalse(status["weapon_set:sword"])
+
+    def test_illusions_utility_readiness_is_reported(self) -> None:
+        screenshot = unittest.mock.Mock()
+
+        def find_template(_screenshot_path: str, template: str) -> list[tuple[int, int]]:
+            return [(0, 0)] if template == "skill_illusions.png" else []
+
+        with (
+            patch.object(tasks, "take_screenshot", return_value=screenshot),
+            patch.object(tasks, "_capture_path", return_value="combat_hud.png"),
+            patch.object(tasks, "find_image_in_image", side_effect=find_template),
+            patch.object(tasks, "is_cc_bar", return_value=False),
+        ):
+            status = tasks.read_combat_hud_status()
+
+        self.assertTrue(status["Utility_Illusions"])
+
 
 if __name__ == "__main__":
     unittest.main()

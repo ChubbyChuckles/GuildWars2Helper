@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ctypes
 import mmap
+import time
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 
 class Link(ctypes.Structure):
@@ -74,3 +76,48 @@ class MumbleLink:
     def _unpack(ctype: type[ctypes.Structure], buf: bytes) -> ctypes.Structure:
         cstring = ctypes.create_string_buffer(buf)
         return ctypes.cast(ctypes.pointer(cstring), ctypes.POINTER(ctype)).contents
+
+
+class MumbleLinkMotionTracker:
+    """Report short-lived avatar movement from successive MumbleLink samples."""
+
+    _MIN_MOVEMENT_DISTANCE = 0.05
+    _MOVEMENT_HOLD_SECONDS = 0.35
+
+    def __init__(
+        self,
+        *,
+        link_factory: Callable[[], MumbleLink] = MumbleLink,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._link_factory = link_factory
+        self._clock = clock
+        self._link: Optional[MumbleLink] = None
+        self._last_position: Optional[tuple[float, float, float]] = None
+        self._moving_until = 0.0
+
+    def is_moving(self) -> bool:
+        now = self._clock()
+        try:
+            if self._link is None:
+                self._link = self._link_factory()
+            link, _ = self._link.read()
+        except (OSError, ValueError):
+            return False
+
+        position = tuple(float(value) for value in link.fAvatarPosition)
+        if self._last_position is not None:
+            distance_squared = sum(
+                (current - previous) ** 2
+                for current, previous in zip(position, self._last_position)
+            )
+            if distance_squared >= self._MIN_MOVEMENT_DISTANCE**2:
+                self._moving_until = now + self._MOVEMENT_HOLD_SECONDS
+        self._last_position = position
+        return now < self._moving_until
+
+    def close(self) -> None:
+        if self._link is None:
+            return
+        self._link.close()
+        self._link = None

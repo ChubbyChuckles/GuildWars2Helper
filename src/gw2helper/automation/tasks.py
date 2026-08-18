@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from threading import Event
@@ -34,11 +35,11 @@ from PIL import Image
 
 from .. import constants
 from ..services.arc_client import is_in_char_select_screen
-from ..services.arcdps_telemetry import CombatTelemetrySnapshot
+from ..services.arcdps_telemetry import CombatTelemetrySnapshot, SkillActivation
 from ..services.gw2_api import Gw2ApiClient
 from ..services.mumble import MumbleLink
 from ..services.notifications import play_beep, send_message
-from .condition_virtuoso import ConditionVirtuosoPlanner
+from .condition_virtuoso import ConditionVirtuosoPlanner, RotationDecision
 
 if TYPE_CHECKING:  # pragma: no cover - type check helpers only
     from char_movement import (
@@ -263,17 +264,20 @@ def read_combat_hud_status() -> dict[str, object]:
 
     skill_4_focus_ready = is_ready("skill_4_focus.png")
     skill_4_sword_ready = is_ready("skill_4_sword.png")
+    skill_5_focus_ready = is_ready("skill_5_focus.png")
     skill_5_sword_ready = is_ready("skill_5_sword.png")
+    skill_illusions_ready = is_ready("skill_illusions.png")
 
     return {
         "Weapon_2": is_ready("skill_2.png"),
         "Weapon_3": is_ready("skill_3.png"),
         "Weapon_4": skill_4_focus_ready or skill_4_sword_ready,
-        "Weapon_5": is_ready("skill_5_focus.png") or skill_5_sword_ready,
+        "Weapon_5": skill_5_focus_ready or skill_5_sword_ready,
         "Profession_1": is_ready("skill_f1.png"),
         "Profession_2": is_ready("skill_f2.png"),
         "Profession_3": is_ready("skill_f3.png"),
         "Profession_5": is_ready("skill_f5.png"),
+        "Utility_Illusions": skill_illusions_ready,
         "Heal": is_ready("skill_heal.png"),
         "Elite": is_ready("skill_ultimate.png"),
         "WeaponSwap": is_ready("weapon_swap.png"),
@@ -281,7 +285,7 @@ def read_combat_hud_status() -> dict[str, object]:
         "buff:Alacrity": is_ready("alacrity.png"),
         "resource:blades": blade_count,
         "target:cc_bar": is_cc_bar(),
-        "weapon_set:focus": skill_4_focus_ready,
+        "weapon_set:focus": skill_4_focus_ready or skill_5_focus_ready,
         "weapon_set:sword": skill_4_sword_ready or skill_5_sword_ready,
     }
 
@@ -534,6 +538,27 @@ def do_rotation(stop_event: Event, cc_supplier: Callable[[], bool]) -> None:
             time.sleep(0.1)
 
 
+_CAST_CONFIRMATION_TIMEOUT_SECONDS = 1.2
+_CAST_RECONCILIATION_SECONDS = 0.9
+_AUTOMATIC_ROTATION_SKILL_IDS = {62510}
+
+
+@dataclass(frozen=True)
+class _PendingRotationAction:
+    decision: RotationDecision
+    baseline_sequence: int
+    sent_at: float
+    deadline: float
+
+
+@dataclass(frozen=True)
+class _ConfirmedRotationAction:
+    decision: RotationDecision
+    confirmed_at: float
+    deadline: float
+    weapon_set: Optional[str] = None
+
+
 def do_condition_virtuoso_rotation(
     stop_event: Event,
     telemetry_supplier: Callable[[], CombatTelemetrySnapshot],
@@ -546,10 +571,8 @@ def do_condition_virtuoso_rotation(
     planner = planner or ConditionVirtuosoPlanner()
     last_status = ""
     last_status_at = 0.0
-    expected_skill_ids: tuple[int, ...] = ()
-    expected_sequence = 0
-    expected_sent_at = 0.0
-    expected_deadline = 0.0
+    pending_action: Optional[_PendingRotationAction] = None
+    confirmed_actions: dict[str, _ConfirmedRotationAction] = {}
 
     def report(message: str) -> None:
         nonlocal last_status, last_status_at
@@ -564,29 +587,73 @@ def do_condition_virtuoso_rotation(
 
     while not stop_event.is_set():
         snapshot = telemetry_supplier()
-        if expected_skill_ids and snapshot.skill_activation_sequence > expected_sequence:
-            expected_sequence = snapshot.skill_activation_sequence
-            activated_at = snapshot.last_skill_activated_at or 0.0
-            if activated_at >= expected_sent_at - 0.1 and snapshot.last_skill_id in _WRONG_VIRTUOSO_SKILLS:
-                expected_text = ", ".join(map(str, expected_skill_ids))
-                report(
-                    "Condition Virtuoso stopped: expected skill "
-                    f"{expected_text}, but ArcDPS observed {snapshot.last_skill_id}. "
-                    "Check GW2_CV_*_KEY bindings in .env."
-                )
-                stop_event.set()
-                continue
-            if snapshot.last_skill_id in expected_skill_ids:
-                expected_skill_ids = ()
-        if expected_skill_ids and time.monotonic() >= expected_deadline:
+        now = time.monotonic()
+        cancelled_action = _cancelled_confirmed_action(
+            confirmed_actions,
+            snapshot,
+            now,
+        )
+        if cancelled_action is not None:
+            pending_action = None
+            planner.recover_from_interruption(cancelled_action, snapshot, now)
             report(
-                "Condition Virtuoso could not confirm the previous cast from ArcDPS; "
-                "continuing with live HUD readiness."
+                f"Condition Virtuoso: {cancelled_action.label} was cancelled; "
+                "recovering from live HUD state."
             )
-            expected_skill_ids = ()
+            continue
+        if pending_action is not None:
+            confirmed, observed = _pending_action_result(pending_action, snapshot, now)
+            if confirmed is not None:
+                planner.record_action(pending_action.decision, confirmed.activated_at)
+                if pending_action.decision.slot:
+                    confirmed_actions[pending_action.decision.slot] = (
+                        _ConfirmedRotationAction(
+                            decision=pending_action.decision,
+                            confirmed_at=confirmed.activated_at,
+                            deadline=confirmed.activated_at
+                            + _CAST_RECONCILIATION_SECONDS,
+                            weapon_set=(
+                                snapshot.weapon_set
+                                if pending_action.decision.slot
+                                and pending_action.decision.slot.startswith("Weapon_")
+                                else None
+                            ),
+                        )
+                    )
+                report(
+                    f"Condition Virtuoso: {pending_action.decision.label} confirmed."
+                )
+                pending_action = None
+                continue
+            if now >= pending_action.deadline:
+                expected_text = ", ".join(
+                    map(str, pending_action.decision.expected_skill_ids)
+                )
+                if observed is None:
+                    report(
+                        "Condition Virtuoso cast was interrupted or not accepted; "
+                        "recovering from live HUD state."
+                    )
+                else:
+                    report(
+                        "Condition Virtuoso expected skill "
+                        f"{expected_text}, but ArcDPS observed {observed.skill_id}; "
+                        "disabling that binding and recovering."
+                    )
+                planner.recover_from_interruption(
+                    pending_action.decision,
+                    snapshot,
+                    now,
+                    observed_skill_id=observed.skill_id if observed else None,
+                )
+                pending_action = None
+                continue
+            report(f"Condition Virtuoso: confirming {pending_action.decision.label}.")
+            stop_event.wait(0.05)
+            continue
         decision = planner.choose(
             snapshot,
-            time.monotonic(),
+            now,
             cc_enabled=cc_supplier(),
         )
         if decision is None:
@@ -604,21 +671,70 @@ def do_condition_virtuoso_rotation(
             stop_event.wait(0.2)
             continue
         sent_at = time.monotonic()
+        if decision.expected_skill_ids:
+            pending_action = _PendingRotationAction(
+                decision=decision,
+                baseline_sequence=snapshot.skill_activation_sequence,
+                sent_at=sent_at,
+                deadline=sent_at + _CAST_CONFIRMATION_TIMEOUT_SECONDS,
+            )
+            report(f"Condition Virtuoso: confirming {decision.label}.")
+            stop_event.wait(0.05)
+            continue
         planner.record_action(decision, sent_at)
-        expected_skill_ids = decision.expected_skill_ids
-        expected_sequence = snapshot.skill_activation_sequence
-        expected_sent_at = sent_at
-        expected_deadline = sent_at + 3.0
         report(f"Condition Virtuoso: {decision.label} ({decision.reason}).")
         stop_event.wait(decision.delay_seconds)
 
     report("Condition Virtuoso rotation stopped.")
 
 
-_WRONG_VIRTUOSO_SKILLS = {
-    10186,  # Temporal Curtain (Focus 4)
-    10280,  # Illusionary Riposte (Sword 4)
-}
+def _pending_action_result(
+    pending_action: _PendingRotationAction,
+    snapshot: CombatTelemetrySnapshot,
+    now: float,
+) -> tuple[Optional[SkillActivation], Optional[SkillActivation]]:
+    """Return the matching activation, or a likely mismatched input after timeout."""
+
+    activations = [
+        activation
+        for activation in snapshot.skill_activations
+        if (
+            activation.sequence > pending_action.baseline_sequence
+            and activation.activated_at >= pending_action.sent_at - 0.1
+        )
+    ]
+    for activation in activations:
+        if activation.skill_id in pending_action.decision.expected_skill_ids:
+            return activation, None
+    if now < pending_action.deadline:
+        return None, None
+    unexpected = next(
+        (
+            activation
+            for activation in activations
+            if activation.skill_id not in _AUTOMATIC_ROTATION_SKILL_IDS
+        ),
+        None,
+    )
+    return None, unexpected
+
+
+def _cancelled_confirmed_action(
+    confirmed_actions: dict[str, _ConfirmedRotationAction],
+    snapshot: CombatTelemetrySnapshot,
+    now: float,
+) -> Optional[RotationDecision]:
+    """Detect a confirmed cast that was cancelled before its slot consumed."""
+
+    for slot, action in list(confirmed_actions.items()):
+        if now < action.deadline:
+            continue
+        del confirmed_actions[slot]
+        if action.weapon_set is not None and snapshot.weapon_set != action.weapon_set:
+            continue
+        if any(skill.slot == slot and skill.ready is True for skill in snapshot.skills):
+            return action.decision
+    return None
 
 
 def _activate_gw2_window() -> bool:
@@ -637,6 +753,8 @@ def _condition_virtuoso_wait_status(snapshot: CombatTelemetrySnapshot) -> str:
         return "Condition Virtuoso is waiting for ArcDPS BHud telemetry."
     if snapshot.character_loaded is not True:
         return "Condition Virtuoso is waiting for a loaded character."
+    if snapshot.player_moving:
+        return "Condition Virtuoso is waiting for player movement or dodge to finish."
     return "Condition Virtuoso is adjusting to current skill and buff state."
 
 

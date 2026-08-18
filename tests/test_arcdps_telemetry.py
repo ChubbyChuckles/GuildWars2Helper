@@ -7,6 +7,7 @@ from gw2helper.services.arcdps_telemetry import (
     ActiveBuff,
     ArcDpsCombatMonitor,
     BHudProtocolError,
+    SkillActivation,
     bhud_port_for_pid,
     decode_bhud_payload,
 )
@@ -209,6 +210,16 @@ class ArcDpsTelemetryTests(unittest.TestCase):
         self.assertEqual(snapshot.last_skill_id, 14375)
         self.assertEqual(snapshot.skill_activation_sequence, 1)
         self.assertEqual(snapshot.last_skill_activated_at, 1000.0)
+        self.assertEqual(
+            snapshot.skill_activations,
+            (
+                SkillActivation(
+                    skill_id=14375,
+                    activated_at=1000.0,
+                    sequence=1,
+                ),
+            ),
+        )
 
     def test_ignores_stale_bhud_backlog_events(self) -> None:
         clock = _Clock(1_000.0)
@@ -255,6 +266,13 @@ class ArcDpsTelemetryTests(unittest.TestCase):
         self.assertEqual(snapshot.blade_count, 5)
         self.assertTrue(snapshot.cc_bar_visible)
         self.assertEqual(snapshot.weapon_set, "sword")
+
+    def test_motion_supplier_is_exposed_in_the_combat_snapshot(self) -> None:
+        monitor = ArcDpsCombatMonitor(movement_supplier=lambda: True)
+
+        monitor._refresh_player_movement()
+
+        self.assertTrue(monitor.snapshot().player_moving)
 
 
 if __name__ == "__main__":

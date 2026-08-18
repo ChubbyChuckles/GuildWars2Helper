@@ -22,6 +22,7 @@ def _snapshot(
     blades: int = 0,
     cc_bar_visible: bool = False,
     weapon_set: str | None = None,
+    player_moving: bool = False,
 ) -> CombatTelemetrySnapshot:
     return CombatTelemetrySnapshot(
         bridge_status="ArcDPS BHud connected",
@@ -31,6 +32,7 @@ def _snapshot(
         blade_count=blades,
         cc_bar_visible=cc_bar_visible,
         weapon_set=weapon_set,
+        player_moving=player_moving,
     )
 
 
@@ -48,6 +50,61 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
             keybinds = ConditionVirtuosoKeybinds.from_environment()
 
         self.assertEqual(keybinds.signet_of_illusions, "7")
+
+    def test_signet_of_illusions_is_not_assumed_to_use_q(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            keybinds = ConditionVirtuosoKeybinds.from_environment()
+
+        self.assertIsNone(keybinds.signet_of_illusions)
+
+    def test_skips_optional_signet_when_utility_template_is_not_ready(self) -> None:
+        planner = ConditionVirtuosoPlanner()
+        planner._opener_index = 11
+        decision = planner.choose(
+            _snapshot(
+                skills=(_skill("Utility_Illusions", False), _skill("Profession_2")),
+                blades=5,
+            ),
+            100.0,
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.label, "Bladesong Sorrow")
+
+    def test_recovers_from_mismatched_optional_signet(self) -> None:
+        planner = ConditionVirtuosoPlanner(
+            ConditionVirtuosoKeybinds(signet_of_illusions="q")
+        )
+        planner._opener_index = 11
+        snapshot = _snapshot(
+            skills=(_skill("Utility_Illusions"), _skill("Profession_2")),
+            blades=5,
+        )
+        signet = planner.choose(snapshot, 100.0)
+
+        self.assertIsNotNone(signet)
+        self.assertEqual(signet.label, "Signet of Illusions")
+        planner.recover_from_interruption(
+            signet,
+            snapshot,
+            100.1,
+            observed_skill_id=10234,
+        )
+
+        recovered = planner.choose(snapshot, 100.3)
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered.label, "Bladesong Sorrow")
+
+    def test_recovers_from_a_blocked_opener_step_without_long_stall(self) -> None:
+        planner = ConditionVirtuosoPlanner()
+        planner._opener_index = 8
+        snapshot = _snapshot(skills=(), blades=0)
+
+        self.assertIsNone(planner.choose(snapshot, 100.0))
+        recovered = planner.choose(snapshot, 101.6)
+
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered.label, "Resume Flying Cutter")
 
     def test_casts_sorrow_at_five_blades_before_other_priority_actions(self) -> None:
         planner = ConditionVirtuosoPlanner(use_opener=False)
@@ -186,6 +243,18 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
             _snapshot(
                 skills=(_skill("Weapon_3"),),
                 buffs=(ActiveBuff(0, "Daze", 1, 1.0),),
+            ),
+            100.0,
+        )
+
+        self.assertIsNone(decision)
+
+    def test_player_movement_stops_new_cast_inputs(self) -> None:
+        planner = ConditionVirtuosoPlanner(use_opener=False)
+        decision = planner.choose(
+            _snapshot(
+                skills=(_skill("Weapon_3"),),
+                player_moving=True,
             ),
             100.0,
         )

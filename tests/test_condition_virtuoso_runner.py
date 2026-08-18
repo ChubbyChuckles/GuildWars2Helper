@@ -6,8 +6,15 @@ import unittest
 from unittest.mock import patch
 
 from gw2helper.automation import tasks
-from gw2helper.automation.condition_virtuoso import ConditionVirtuosoPlanner
-from gw2helper.services.arcdps_telemetry import CombatTelemetrySnapshot, SkillCooldown
+from gw2helper.automation.condition_virtuoso import (
+    ConditionVirtuosoPlanner,
+    RotationDecision,
+)
+from gw2helper.services.arcdps_telemetry import (
+    CombatTelemetrySnapshot,
+    SkillActivation,
+    SkillCooldown,
+)
 
 
 def _ready_rotation_snapshot() -> CombatTelemetrySnapshot:
@@ -43,6 +50,48 @@ class ConditionVirtuosoRunnerTests(unittest.TestCase):
 
         self.assertEqual(sent_keys, ["3"])
         self.assertTrue(any("Unstable Bladestorm" in status for status in statuses))
+
+    def test_commits_action_only_after_expected_native_activation(self) -> None:
+        stop_event = Event()
+        planner = ConditionVirtuosoPlanner(use_opener=False)
+        snapshots = iter((_ready_rotation_snapshot(),))
+
+        def telemetry_supplier() -> CombatTelemetrySnapshot:
+            try:
+                return next(snapshots)
+            except StopIteration:
+                return CombatTelemetrySnapshot(
+                    bridge_status="ArcDPS BHud connected",
+                    character_loaded=True,
+                    skills=(),
+                    buffs=(),
+                    last_skill_id=62607,
+                    skill_activation_sequence=1,
+                    last_skill_activated_at=time.monotonic(),
+                    skill_activations=(
+                        SkillActivation(62607, time.monotonic(), 1),
+                    ),
+                )
+
+        original_record_action = planner.record_action
+
+        def record_action(decision, now: float) -> None:
+            original_record_action(decision, now)
+            stop_event.set()
+
+        with (
+            patch.object(tasks, "_activate_gw2_window", return_value=True),
+            patch.object(tasks.autoit, "send"),
+            patch.object(planner, "record_action", side_effect=record_action) as record,
+        ):
+            tasks.do_condition_virtuoso_rotation(
+                stop_event,
+                telemetry_supplier,
+                lambda: False,
+                planner=planner,
+            )
+
+        record.assert_called_once()
 
     def test_never_sends_input_when_bridge_is_unavailable(self) -> None:
         stop_event = Event()
@@ -87,39 +136,100 @@ class ConditionVirtuosoRunnerTests(unittest.TestCase):
 
         send.assert_not_called()
 
-    def test_stops_when_native_activation_is_a_wrong_offhand_skill(self) -> None:
-        stop_event = Event()
-        statuses: list[str] = []
-        snapshots = iter((_ready_rotation_snapshot(),))
+    def test_reports_mismatched_native_activation_after_confirmation_timeout(self) -> None:
+        decision = RotationDecision(
+            key="q",
+            label="Signet of Illusions",
+            slot="Utility_Illusions",
+            delay_seconds=0.12,
+            reason="test",
+            expected_skill_ids=(10247,),
+        )
+        pending = tasks._PendingRotationAction(
+            decision=decision,
+            baseline_sequence=0,
+            sent_at=100.0,
+            deadline=101.2,
+        )
+        snapshot = CombatTelemetrySnapshot(
+            bridge_status="ArcDPS BHud connected",
+            character_loaded=True,
+            skills=(),
+            buffs=(),
+            skill_activation_sequence=1,
+            skill_activations=(SkillActivation(10234, 100.1, 1),),
+        )
 
-        def telemetry_supplier() -> CombatTelemetrySnapshot:
-            try:
-                return next(snapshots)
-            except StopIteration:
-                return CombatTelemetrySnapshot(
-                    bridge_status="ArcDPS BHud connected",
-                    character_loaded=True,
-                    skills=(),
-                    buffs=(),
-                    last_skill_id=10280,
-                    skill_activation_sequence=1,
-                    last_skill_activated_at=time.monotonic(),
-                )
+        confirmed, observed = tasks._pending_action_result(pending, snapshot, 101.3)
 
-        with (
-            patch.object(tasks, "_activate_gw2_window", return_value=True),
-            patch.object(tasks.autoit, "send"),
-        ):
-            tasks.do_condition_virtuoso_rotation(
-                stop_event,
-                telemetry_supplier,
-                lambda: False,
-                statuses.append,
-                planner=ConditionVirtuosoPlanner(use_opener=False),
+        self.assertIsNone(confirmed)
+        self.assertEqual(observed, SkillActivation(10234, 100.1, 1))
+
+    def test_detects_a_confirmed_cast_that_returns_to_ready_state(self) -> None:
+        decision = RotationDecision(
+            key="3",
+            label="Unstable Bladestorm",
+            slot="Weapon_3",
+            delay_seconds=0.42,
+            reason="test",
+            expected_skill_ids=(62607,),
+        )
+        confirmed_actions = {
+            "Weapon_3": tasks._ConfirmedRotationAction(
+                decision=decision,
+                confirmed_at=100.0,
+                deadline=100.9,
             )
+        }
+        snapshot = CombatTelemetrySnapshot(
+            bridge_status="ArcDPS BHud connected",
+            character_loaded=True,
+            skills=(SkillCooldown(None, "Weapon_3", "Weapon_3", True, 0.0),),
+            buffs=(),
+        )
 
-        self.assertTrue(stop_event.is_set())
-        self.assertTrue(any("expected skill" in status for status in statuses))
+        cancelled = tasks._cancelled_confirmed_action(
+            confirmed_actions,
+            snapshot,
+            101.0,
+        )
+
+        self.assertEqual(cancelled, decision)
+        self.assertEqual(confirmed_actions, {})
+
+    def test_does_not_treat_a_weapon_swap_as_a_cancelled_weapon_five(self) -> None:
+        decision = RotationDecision(
+            key="5",
+            label="Phantasmal Swordsman",
+            slot="Weapon_5",
+            delay_seconds=0.82,
+            reason="test",
+            expected_skill_ids=(10174,),
+        )
+        confirmed_actions = {
+            "Weapon_5": tasks._ConfirmedRotationAction(
+                decision=decision,
+                confirmed_at=100.0,
+                deadline=100.9,
+                weapon_set="sword",
+            )
+        }
+        snapshot = CombatTelemetrySnapshot(
+            bridge_status="ArcDPS BHud connected",
+            character_loaded=True,
+            skills=(SkillCooldown(None, "Weapon_5", "Weapon_5", True, 0.0),),
+            buffs=(),
+            weapon_set="focus",
+        )
+
+        cancelled = tasks._cancelled_confirmed_action(
+            confirmed_actions,
+            snapshot,
+            101.0,
+        )
+
+        self.assertIsNone(cancelled)
+        self.assertEqual(confirmed_actions, {})
 
     def test_ignores_unrelated_native_activations_while_cast_is_pending(self) -> None:
         stop_event = Event()
@@ -135,6 +245,7 @@ class ConditionVirtuosoRunnerTests(unittest.TestCase):
                     last_skill_id=62510,
                     skill_activation_sequence=1,
                     last_skill_activated_at=time.monotonic(),
+                    skill_activations=(SkillActivation(62510, time.monotonic(), 1),),
                 ),
                 CombatTelemetrySnapshot(
                     bridge_status="ArcDPS BHud connected",
@@ -144,6 +255,10 @@ class ConditionVirtuosoRunnerTests(unittest.TestCase):
                     last_skill_id=62607,
                     skill_activation_sequence=2,
                     last_skill_activated_at=time.monotonic(),
+                    skill_activations=(
+                        SkillActivation(62510, time.monotonic(), 1),
+                        SkillActivation(62607, time.monotonic(), 2),
+                    ),
                 ),
             )
         )
