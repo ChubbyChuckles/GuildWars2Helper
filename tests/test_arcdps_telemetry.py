@@ -228,12 +228,30 @@ class ArcDpsTelemetryTests(unittest.TestCase):
 
     def test_visual_quickness_is_available_before_native_buff_events(self) -> None:
         monitor = ArcDpsCombatMonitor(clock=_Clock(1_000.0))
-        monitor.update_hud_status({"Weapon_2": True, "buff:Quickness": True})
+        monitor.update_hud_status(
+            {
+                "Weapon_2": True,
+                "buff:Quickness": True,
+                "buff:Alacrity": True,
+                "resource:blades": 5,
+                "target:cc_bar": True,
+                "weapon_set:sword": True,
+            }
+        )
 
         snapshot = monitor.snapshot()
 
         self.assertEqual(snapshot.skills[0].name, "Weapon 2")
-        self.assertEqual(snapshot.buffs, (ActiveBuff(1187, "Quickness", 1, None),))
+        self.assertEqual(
+            snapshot.buffs,
+            (
+                ActiveBuff(30328, "Alacrity", 1, None),
+                ActiveBuff(1187, "Quickness", 1, None),
+            ),
+        )
+        self.assertEqual(snapshot.blade_count, 5)
+        self.assertTrue(snapshot.cc_bar_visible)
+        self.assertEqual(snapshot.weapon_set, "sword")
 
 
 if __name__ == "__main__":

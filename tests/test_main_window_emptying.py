@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from PyQt6 import QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from gw2helper import constants, persistence
 from gw2helper.services.arcdps_telemetry import (
@@ -85,6 +85,18 @@ class MainWindowEmptyingTests(unittest.TestCase):
 
         self.assertEqual(self.window.pause_button.text(), "Start Rotation")
         self.assertTrue(self.window.pause_button.isEnabled())
+        toggle.assert_called_once_with()
+
+    def test_pause_key_toggles_rotation_when_farming_is_idle(self) -> None:
+        event = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            QtCore.Qt.Key.Key_Pause,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+        with patch.object(self.window, "_toggle_pause") as toggle:
+            self.window.keyPressEvent(event)
+
+        self.assertTrue(event.isAccepted())
         toggle.assert_called_once_with()
 
     def test_combat_telemetry_panel_renders_skill_and_buff_data(self) -> None:

@@ -117,7 +117,7 @@ class TaskController(QtCore.QObject):
         return self._combat_monitor.snapshot()
 
     def start_rotation(self) -> bool:
-        """Start the legacy image-driven damage rotation in a daemon thread."""
+        """Start the adaptive condition Virtuoso rotation in a daemon thread."""
 
         if self.is_farming_active():
             self.status_changed.emit("Pause or finish farming before starting the damage rotation.")
@@ -130,7 +130,12 @@ class TaskController(QtCore.QObject):
 
         def worker() -> None:
             try:
-                tasks.do_rotation(stop_event, constants.is_combat_cc_enabled)
+                tasks.do_condition_virtuoso_rotation(
+                    stop_event,
+                    self.combat_telemetry_snapshot,
+                    constants.is_combat_cc_enabled,
+                    self.status_changed.emit,
+                )
             except Exception as exc:  # pragma: no cover - runtime safeguard
                 self.status_changed.emit(f"Damage rotation failed: {exc}")
             finally:
@@ -141,7 +146,7 @@ class TaskController(QtCore.QObject):
         self._rotation_thread = Thread(target=worker, daemon=True)
         self._rotation_thread.start()
         self.rotation_state_changed.emit(True)
-        self.status_changed.emit("Damage rotation started.")
+        self.status_changed.emit("Condition Virtuoso rotation started.")
         return True
 
     def stop_rotation(self) -> bool:

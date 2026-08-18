@@ -34,9 +34,11 @@ from PIL import Image
 
 from .. import constants
 from ..services.arc_client import is_in_char_select_screen
+from ..services.arcdps_telemetry import CombatTelemetrySnapshot
 from ..services.gw2_api import Gw2ApiClient
 from ..services.mumble import MumbleLink
 from ..services.notifications import play_beep, send_message
+from .condition_virtuoso import ConditionVirtuosoPlanner
 
 if TYPE_CHECKING:  # pragma: no cover - type check helpers only
     from char_movement import (
@@ -247,7 +249,7 @@ def scan_skills():
     )
 
 
-def read_combat_hud_status() -> dict[str, bool]:
+def read_combat_hud_status() -> dict[str, object]:
     """Read visible action-bar readiness using the same templates as rotation."""
 
     screenshot = take_screenshot((1514, 1986, 766, 160))
@@ -257,11 +259,17 @@ def read_combat_hud_status() -> dict[str, bool]:
     def is_ready(template: str) -> bool:
         return bool(find_image_in_image(screenshot_path, template))
 
+    blade_count = len(find_image_in_image(screenshot_path, "blade.png"))
+
+    skill_4_focus_ready = is_ready("skill_4_focus.png")
+    skill_4_sword_ready = is_ready("skill_4_sword.png")
+    skill_5_sword_ready = is_ready("skill_5_sword.png")
+
     return {
         "Weapon_2": is_ready("skill_2.png"),
         "Weapon_3": is_ready("skill_3.png"),
-        "Weapon_4": is_ready("skill_4_focus.png"),
-        "Weapon_5": is_ready("skill_5_focus.png") or is_ready("skill_5_sword.png"),
+        "Weapon_4": skill_4_focus_ready or skill_4_sword_ready,
+        "Weapon_5": is_ready("skill_5_focus.png") or skill_5_sword_ready,
         "Profession_1": is_ready("skill_f1.png"),
         "Profession_2": is_ready("skill_f2.png"),
         "Profession_3": is_ready("skill_f3.png"),
@@ -270,6 +278,11 @@ def read_combat_hud_status() -> dict[str, bool]:
         "Elite": is_ready("skill_ultimate.png"),
         "WeaponSwap": is_ready("weapon_swap.png"),
         "buff:Quickness": is_ready("quickness.png"),
+        "buff:Alacrity": is_ready("alacrity.png"),
+        "resource:blades": blade_count,
+        "target:cc_bar": is_cc_bar(),
+        "weapon_set:focus": skill_4_focus_ready,
+        "weapon_set:sword": skill_4_sword_ready or skill_5_sword_ready,
     }
 
 
@@ -519,6 +532,76 @@ def do_rotation(stop_event: Event, cc_supplier: Callable[[], bool]) -> None:
                             time.sleep(0.25 * time_adjustment)
         except Exception:
             time.sleep(0.1)
+
+
+def do_condition_virtuoso_rotation(
+    stop_event: Event,
+    telemetry_supplier: Callable[[], CombatTelemetrySnapshot],
+    cc_supplier: Callable[[], bool],
+    update_status: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Run the adaptive condition Virtuoso priority loop from live telemetry."""
+
+    planner = ConditionVirtuosoPlanner()
+    last_status = ""
+    last_status_at = 0.0
+
+    def report(message: str) -> None:
+        nonlocal last_status, last_status_at
+        now = time.monotonic()
+        if update_status is None or (
+            message == last_status and now - last_status_at < 1.0
+        ):
+            return
+        last_status = message
+        last_status_at = now
+        update_status(message)
+
+    while not stop_event.is_set():
+        snapshot = telemetry_supplier()
+        decision = planner.choose(
+            snapshot,
+            time.monotonic(),
+            cc_enabled=cc_supplier(),
+        )
+        if decision is None:
+            report(_condition_virtuoso_wait_status(snapshot))
+            stop_event.wait(0.05)
+            continue
+        if not _activate_gw2_window():
+            report("Guild Wars 2 is not foreground; Condition Virtuoso rotation is waiting.")
+            stop_event.wait(0.2)
+            continue
+        try:
+            autoit.send(decision.key)
+        except Exception as exc:
+            report(f"Condition Virtuoso input failed: {exc}")
+            stop_event.wait(0.2)
+            continue
+        planner.record_action(decision, time.monotonic())
+        report(f"Condition Virtuoso: {decision.label} ({decision.reason}).")
+        stop_event.wait(decision.delay_seconds)
+
+    report("Condition Virtuoso rotation stopped.")
+
+
+def _activate_gw2_window() -> bool:
+    if _is_gw2_window_foreground():
+        return True
+    try:
+        autoit.win_activate(_GW2_WINDOW_TITLE)
+    except Exception:
+        return False
+    time.sleep(0.1)
+    return _is_gw2_window_foreground()
+
+
+def _condition_virtuoso_wait_status(snapshot: CombatTelemetrySnapshot) -> str:
+    if snapshot.bridge_status != "ArcDPS BHud connected":
+        return "Condition Virtuoso is waiting for ArcDPS BHud telemetry."
+    if snapshot.character_loaded is not True:
+        return "Condition Virtuoso is waiting for a loaded character."
+    return "Condition Virtuoso is adjusting to current skill and buff state."
 
 
 def read_text_from_image(image_path: str, tesseract_cmd: Optional[str] = None) -> str:

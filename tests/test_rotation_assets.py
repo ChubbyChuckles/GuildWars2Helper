@@ -17,11 +17,13 @@ class RotationAssetTests(unittest.TestCase):
 
     def test_all_rotation_templates_are_present(self) -> None:
         template_names = {
+            "alacrity.png",
             "blade.png",
             "quickness.png",
             "skill_2.png",
             "skill_3.png",
             "skill_4_focus.png",
+            "skill_4_sword.png",
             "skill_5_focus.png",
             "skill_5_sword.png",
             "skill_f1.png",

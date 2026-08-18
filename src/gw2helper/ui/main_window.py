@@ -20,12 +20,32 @@ from ..services.gw2_api import BankSummary
 
 if sys.platform == "win32":
 
-    class _F5Hotkey(QtCore.QObject, QtCore.QAbstractNativeEventFilter):
+    class _PauseHotkey(QtCore.QObject, QtCore.QAbstractNativeEventFilter):
         triggered = QtCore.pyqtSignal()
 
         _WM_HOTKEY = 0x0312
+        _WM_KEYDOWN = 0x0100
+        _WM_SYSKEYDOWN = 0x0104
         _MOD_NOREPEAT = 0x4000
-        _VK_F5 = 0x74
+        _VK_PAUSE = 0x13
+        _VK_CANCEL = 0x03
+        _WH_KEYBOARD_LL = 13
+
+        class _KeyboardHookData(ctypes.Structure):
+            _fields_ = [
+                ("vkCode", wintypes.DWORD),
+                ("scanCode", wintypes.DWORD),
+                ("flags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t),
+            ]
+
+        _KeyboardHookProc = ctypes.WINFUNCTYPE(
+            wintypes.LPARAM,
+            ctypes.c_int,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        )
 
         def __init__(self, window: QtWidgets.QWidget) -> None:
             super().__init__(window)
@@ -35,6 +55,31 @@ if sys.platform == "win32":
             self._installed = False
             self._registered = False
             self._hwnd: Optional[int] = None
+            self._keyboard_hook: Optional[int] = None
+            self._keyboard_hook_proc = self._KeyboardHookProc(
+                self._keyboard_hook_callback
+            )
+            self._last_hook_tick = 0
+
+            self._user32.SetWindowsHookExW.argtypes = [
+                ctypes.c_int,
+                self._KeyboardHookProc,
+                wintypes.HINSTANCE,
+                wintypes.DWORD,
+            ]
+            self._user32.SetWindowsHookExW.restype = wintypes.HANDLE
+            self._user32.UnhookWindowsHookEx.argtypes = [wintypes.HANDLE]
+            self._user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+            self._user32.CallNextHookEx.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_int,
+                wintypes.WPARAM,
+                wintypes.LPARAM,
+            ]
+            self._user32.CallNextHookEx.restype = wintypes.LPARAM
+            self._kernel32 = ctypes.windll.kernel32
+            self._kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+            self._kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 
         def register(self) -> bool:
             if self._registered:
@@ -42,21 +87,36 @@ if sys.platform == "win32":
             hwnd = int(self._window.winId())
             if not hwnd:
                 return False
-            if not self._user32.RegisterHotKey(
+            if self._user32.RegisterHotKey(
                 hwnd,
                 self._id,
                 self._MOD_NOREPEAT,
-                self._VK_F5,
+                self._VK_PAUSE,
             ):
+                app = QtWidgets.QApplication.instance()
+                if app is None:
+                    self._user32.UnregisterHotKey(hwnd, self._id)
+                    return False
+                app.installNativeEventFilter(self)
+                self._installed = True
+                self._registered = True
+                self._hwnd = hwnd
+                return True
+
+            # VK_PAUSE cannot be registered with RegisterHotKey on some Windows
+            # systems. A low-level hook retains the intended global Pause/Break
+            # behavior without requiring the application window to be focused.
+            module = self._kernel32.GetModuleHandleW(None)
+            keyboard_hook = self._user32.SetWindowsHookExW(
+                self._WH_KEYBOARD_LL,
+                self._keyboard_hook_proc,
+                module,
+                0,
+            )
+            if not keyboard_hook:
                 return False
-            app = QtWidgets.QApplication.instance()
-            if app is None:
-                self._user32.UnregisterHotKey(hwnd, self._id)
-                return False
-            app.installNativeEventFilter(self)
-            self._installed = True
+            self._keyboard_hook = int(keyboard_hook)
             self._registered = True
-            self._hwnd = hwnd
             return True
 
         def nativeEventFilter(self, event_type: str, message: int) -> tuple[bool, int]:
@@ -70,6 +130,27 @@ if sys.platform == "win32":
                 return True, 0
             return False, 0
 
+        def _keyboard_hook_callback(
+            self,
+            code: int,
+            message: int,
+            data_pointer: int,
+        ) -> int:
+            if code >= 0 and message in {self._WM_KEYDOWN, self._WM_SYSKEYDOWN}:
+                data = self._KeyboardHookData.from_address(int(data_pointer))
+                if data.vkCode in {self._VK_PAUSE, self._VK_CANCEL}:
+                    if data.time != self._last_hook_tick:
+                        self._last_hook_tick = data.time
+                        self.triggered.emit()
+            return int(
+                self._user32.CallNextHookEx(
+                    self._keyboard_hook or 0,
+                    code,
+                    message,
+                    data_pointer,
+                )
+            )
+
         def dispose(self) -> None:
             if self._installed:
                 app = QtWidgets.QApplication.instance()
@@ -78,15 +159,18 @@ if sys.platform == "win32":
                 self._installed = False
             if self._registered and self._hwnd is not None:
                 self._user32.UnregisterHotKey(self._hwnd, self._id)
-                self._registered = False
                 self._hwnd = None
+            if self._keyboard_hook is not None:
+                self._user32.UnhookWindowsHookEx(self._keyboard_hook)
+                self._keyboard_hook = None
+            self._registered = False
 
         @property
         def is_registered(self) -> bool:
             return self._registered
 
 else:
-    _F5Hotkey = None  # type: ignore[assignment]
+    _PauseHotkey = None  # type: ignore[assignment]
 
 
 class TitleBar(QtWidgets.QWidget):
@@ -267,7 +351,7 @@ class MainWindow(QtWidgets.QWidget):
         self._start_event_timer()
         self._start_uptime_timer()
         self._refresh_stats_display()
-        self._pause_shortcut = QtGui.QShortcut(QtGui.QKeySequence("F5"), self)
+        self._pause_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Pause"), self)
         self._pause_shortcut.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
         self._pause_shortcut.activated.connect(self._toggle_pause)
         self._global_hotkey = self._create_global_hotkey()
@@ -554,7 +638,7 @@ QToolTip {
         self.pause_button = QtWidgets.QPushButton("Pause")
         self.pause_button.setObjectName("PauseButton")
         self.pause_button.setText("Start Rotation")
-        self.pause_button.setToolTip("Start damage rotation (F5)")
+        self.pause_button.setToolTip("Start damage rotation (Pause)")
         self._apply_soft_shadow(
             self.pause_button,
             QtGui.QColor(120, 210, 235, 150),
@@ -584,52 +668,54 @@ QToolTip {
         options_row.addStretch()
         panel_layout.addLayout(options_row)
 
-        bank_row = QtWidgets.QHBoxLayout()
-        bank_row.setSpacing(8)
+        bank_row = QtWidgets.QGridLayout()
+        bank_row.setHorizontalSpacing(8)
+        bank_row.setVerticalSpacing(8)
         self.bank_slots_pill = QtWidgets.QLabel("Bank Loading")
         self.bank_slots_pill.setObjectName("StatPill")
         self.bank_slots_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.bank_slots_pill.setProperty("state", "neutral")
-        bank_row.addWidget(self.bank_slots_pill)
+        bank_row.addWidget(self.bank_slots_pill, 0, 0)
 
         self.bank_rare_pill = QtWidgets.QLabel("Rare --")
         self.bank_rare_pill.setObjectName("StatPill")
         self.bank_rare_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.bank_rare_pill.setProperty("state", "neutral")
-        bank_row.addWidget(self.bank_rare_pill)
+        bank_row.addWidget(self.bank_rare_pill, 0, 1)
 
         self.bank_exotic_pill = QtWidgets.QLabel("Exotic --")
         self.bank_exotic_pill.setObjectName("StatPill")
         self.bank_exotic_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.bank_exotic_pill.setProperty("state", "neutral")
-        bank_row.addWidget(self.bank_exotic_pill)
+        bank_row.addWidget(self.bank_exotic_pill, 1, 0)
 
         self.refresh_bank_button = QtWidgets.QPushButton("Refresh Bank")
         self.refresh_bank_button.setToolTip("Refresh account-bank data from the Guild Wars 2 API")
-        bank_row.addWidget(self.refresh_bank_button)
-        bank_row.addStretch()
+        bank_row.addWidget(self.refresh_bank_button, 1, 1)
+        bank_row.setColumnStretch(2, 1)
         panel_layout.addLayout(bank_row)
 
-        stats_row = QtWidgets.QHBoxLayout()
-        stats_row.setSpacing(18)
+        stats_row = QtWidgets.QGridLayout()
+        stats_row.setHorizontalSpacing(8)
+        stats_row.setVerticalSpacing(8)
         self.farmed_today_pill = QtWidgets.QLabel("Farmed Today: No")
         self.farmed_today_pill.setObjectName("StatPill")
         self.farmed_today_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.farmed_today_pill.setProperty("state", "negative")
-        stats_row.addWidget(self.farmed_today_pill)
+        stats_row.addWidget(self.farmed_today_pill, 0, 0)
 
         self.farm_count_pill = QtWidgets.QLabel("Runs Since Empty: 0")
         self.farm_count_pill.setObjectName("StatPill")
         self.farm_count_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.farm_count_pill.setProperty("state", "neutral")
-        stats_row.addWidget(self.farm_count_pill)
+        stats_row.addWidget(self.farm_count_pill, 0, 1)
 
         self.farmed_count_pill = QtWidgets.QLabel("Characters Farmed Today: 0")
         self.farmed_count_pill.setObjectName("StatPill")
         self.farmed_count_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.farmed_count_pill.setProperty("state", "neutral")
-        stats_row.addWidget(self.farmed_count_pill)
-        stats_row.addStretch()
+        stats_row.addWidget(self.farmed_count_pill, 1, 0, 1, 2)
+        stats_row.setColumnStretch(2, 1)
         panel_layout.addLayout(stats_row)
 
         self.status_label = QtWidgets.QLabel("Ready")
@@ -895,7 +981,7 @@ QToolTip {
         self.farm_button.setEnabled(False)
         self.pause_button.setEnabled(True)
         self.pause_button.setText("Pause")
-        self.pause_button.setToolTip("Pause farming (F5)")
+        self.pause_button.setToolTip("Pause farming (Pause)")
         self.setFocus()
 
     def _on_farming_completed(self, payload: dict) -> None:
@@ -943,10 +1029,10 @@ QToolTip {
             return
         if paused:
             self.pause_button.setText("Resume")
-            self.pause_button.setToolTip("Resume farming (F5)")
+            self.pause_button.setToolTip("Resume farming (Pause)")
         else:
             self.pause_button.setText("Pause")
-            self.pause_button.setToolTip("Pause farming (F5)")
+            self.pause_button.setToolTip("Pause farming (Pause)")
 
     def _toggle_pause(self) -> None:
         if self.controller.is_farming_active():
@@ -964,16 +1050,16 @@ QToolTip {
         self.pause_button.setEnabled(True)
         if running:
             self.pause_button.setText("Stop Rotation")
-            self.pause_button.setToolTip("Stop damage rotation (F5)")
+            self.pause_button.setToolTip("Stop damage rotation (Pause)")
         else:
             self.pause_button.setText("Start Rotation")
-            self.pause_button.setToolTip("Start damage rotation (F5)")
+            self.pause_button.setToolTip("Start damage rotation (Pause)")
 
     def _create_global_hotkey(self):
-        if _F5Hotkey is None or sys.platform != "win32":
+        if _PauseHotkey is None or sys.platform != "win32":
             return None
         try:
-            hotkey = _F5Hotkey(self)
+            hotkey = _PauseHotkey(self)
         except Exception:
             return None
         hotkey.triggered.connect(self._toggle_pause)
@@ -1236,7 +1322,7 @@ QToolTip {
         persistence.save_app_state(self._app_state)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # type: ignore[override]
-        if event.key() == QtCore.Qt.Key.Key_F5:
+        if event.key() in {QtCore.Qt.Key.Key_Pause, QtCore.Qt.Key.Key_F5}:
             self._toggle_pause()
             event.accept()
             return
@@ -1249,7 +1335,7 @@ QToolTip {
         if self._global_hotkey is not None and not self._global_hotkey.is_registered:
             if not self._global_hotkey.register():
                 self.status_label.setText(
-                    "Global F5 hotkey unavailable; using in-app shortcut only."
+                    "Global Pause hotkey unavailable; using in-app shortcut only."
                 )
 
     def moveEvent(self, event: QtGui.QMoveEvent) -> None:  # type: ignore[override]

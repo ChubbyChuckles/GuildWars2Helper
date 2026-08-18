@@ -63,14 +63,15 @@ class BankSummaryControllerTests(unittest.TestCase):
         started = []
         stopped = []
 
-        def run_rotation(stop_event, cc_supplier) -> None:
+        def run_rotation(stop_event, telemetry_supplier, cc_supplier, update_status) -> None:
+            del telemetry_supplier, update_status
             started.append(cc_supplier())
             stop_event.wait(1)
 
         controller.rotation_state_changed.connect(stopped.append)
         constants.set_combat_cc_enabled(True)
         with patch(
-            "gw2helper.controllers.task_controller.tasks.do_rotation",
+            "gw2helper.controllers.task_controller.tasks.do_condition_virtuoso_rotation",
             side_effect=run_rotation,
         ):
             self.assertTrue(controller.start_rotation())

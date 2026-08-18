@@ -34,12 +34,22 @@ _KNOWN_BUFF_NAMES = {
     717: "Protection",
     718: "Regeneration",
     719: "Swiftness",
+    721: "Crippled",
+    722: "Chilled",
+    723: "Poison",
     725: "Fury",
     726: "Vigor",
+    727: "Immobilized",
+    736: "Bleeding",
+    737: "Burning",
+    738: "Vulnerability",
     740: "Might",
     743: "Aegis",
+    861: "Confusion",
     873: "Resolution",
     1187: "Quickness",
+    19426: "Torment",
+    26766: "Slow",
     30328: "Alacrity",
 }
 _KNOWN_BUFF_IDS = {name.casefold(): skill_id for skill_id, name in _KNOWN_BUFF_NAMES.items()}
@@ -143,6 +153,9 @@ class CombatTelemetrySnapshot:
     character_loaded: Optional[bool]
     skills: tuple[SkillCooldown, ...]
     buffs: tuple[ActiveBuff, ...]
+    blade_count: int = 0
+    cc_bar_visible: bool = False
+    weapon_set: Optional[str] = None
 
 
 @dataclass
@@ -316,7 +329,7 @@ class ArcDpsCombatMonitor:
     def __init__(
         self,
         *,
-        hud_supplier: Optional[Callable[[], Mapping[str, bool]]] = None,
+        hud_supplier: Optional[Callable[[], Mapping[str, object]]] = None,
         skill_lookup: Optional[Callable[[int], Optional[SkillMetadata]]] = None,
         process_id_supplier: Optional[Callable[[], Optional[int]]] = None,
         clock: Callable[[], float] = time.monotonic,
@@ -338,6 +351,9 @@ class ArcDpsCombatMonitor:
         self._skill_records: dict[int, _SkillRecord] = {}
         self._hud_ready: dict[str, bool] = {}
         self._hud_buffs: dict[str, bool] = {}
+        self._blade_count = 0
+        self._cc_bar_visible = False
+        self._weapon_set: Optional[str] = None
         self._skill_lookups_in_progress: set[int] = set()
         self._seen_event_ids: OrderedDict[
             tuple[int, int, int, int, int, int, int],
@@ -366,6 +382,9 @@ class ArcDpsCombatMonitor:
                 character_loaded=self._character_loaded,
                 skills=tuple(self._build_skill_snapshot(now)),
                 buffs=tuple(self._build_buff_snapshot(now)),
+                blade_count=self._blade_count,
+                cc_bar_visible=self._cc_bar_visible,
+                weapon_set=self._weapon_set,
             )
 
     def ingest_payload(self, payload: bytes) -> None:
@@ -376,7 +395,7 @@ class ArcDpsCombatMonitor:
             if combat_message is not None:
                 self._ingest_combat_message(combat_message)
 
-    def update_hud_status(self, status: Mapping[str, bool]) -> None:
+    def update_hud_status(self, status: Mapping[str, object]) -> None:
         """Update action-bar readiness and visual fallback buff observations."""
 
         with self._lock:
@@ -390,6 +409,12 @@ class ArcDpsCombatMonitor:
                 for key, value in status.items()
                 if str(key).startswith("buff:")
             }
+            self._blade_count = _nonnegative_int(status.get("resource:blades"))
+            self._cc_bar_visible = bool(status.get("target:cc_bar", False))
+            if bool(status.get("weapon_set:focus", False)):
+                self._weapon_set = "focus"
+            elif bool(status.get("weapon_set:sword", False)):
+                self._weapon_set = "sword"
 
     def _run(self) -> None:
         next_hud_scan = 0.0
@@ -722,3 +747,10 @@ def _buff_name(skill_id: int, skill_name: Optional[str]) -> str:
     if skill_name and skill_name.strip() and skill_name != "0":
         return skill_name.strip()
     return _KNOWN_BUFF_NAMES.get(skill_id, f"Buff {skill_id}")
+
+
+def _nonnegative_int(value: object) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
