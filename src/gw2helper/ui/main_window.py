@@ -12,6 +12,11 @@ from typing import Dict, List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+try:
+    import keyboard
+except ModuleNotFoundError:  # pragma: no cover - Windows fallback remains available
+    keyboard = None  # type: ignore[assignment]
+
 from .. import constants, persistence
 from ..automation import tasks
 from ..controllers.task_controller import TaskController
@@ -56,6 +61,7 @@ if sys.platform == "win32":
             self._registered = False
             self._hwnd: Optional[int] = None
             self._keyboard_hook: Optional[int] = None
+            self._keyboard_hotkey: Optional[object] = None
             self._keyboard_hook_proc = self._KeyboardHookProc(
                 self._keyboard_hook_callback
             )
@@ -84,6 +90,20 @@ if sys.platform == "win32":
         def register(self) -> bool:
             if self._registered:
                 return True
+            if keyboard is not None:
+                try:
+                    self._keyboard_hotkey = keyboard.add_hotkey(
+                        "pause",
+                        self.triggered.emit,
+                        suppress=False,
+                        trigger_on_release=False,
+                    )
+                except Exception:
+                    self._keyboard_hotkey = None
+                else:
+                    self._registered = True
+                    return True
+
             hwnd = int(self._window.winId())
             if not hwnd:
                 return False
@@ -152,6 +172,12 @@ if sys.platform == "win32":
             )
 
         def dispose(self) -> None:
+            if self._keyboard_hotkey is not None and keyboard is not None:
+                try:
+                    keyboard.remove_hotkey(self._keyboard_hotkey)
+                except Exception:
+                    pass
+                self._keyboard_hotkey = None
             if self._installed:
                 app = QtWidgets.QApplication.instance()
                 if app is not None:

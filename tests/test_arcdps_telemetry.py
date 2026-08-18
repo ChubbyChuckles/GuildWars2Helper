@@ -206,6 +206,9 @@ class ArcDpsTelemetryTests(unittest.TestCase):
         self.assertEqual(skill.name, "Arcing Slice")
         self.assertAlmostEqual(skill.remaining_seconds or 0.0, 6.0)
         self.assertFalse(skill.ready)
+        self.assertEqual(snapshot.last_skill_id, 14375)
+        self.assertEqual(snapshot.skill_activation_sequence, 1)
+        self.assertEqual(snapshot.last_skill_activated_at, 1000.0)
 
     def test_ignores_stale_bhud_backlog_events(self) -> None:
         clock = _Clock(1_000.0)

@@ -156,6 +156,9 @@ class CombatTelemetrySnapshot:
     blade_count: int = 0
     cc_bar_visible: bool = False
     weapon_set: Optional[str] = None
+    last_skill_id: Optional[int] = None
+    skill_activation_sequence: int = 0
+    last_skill_activated_at: Optional[float] = None
 
 
 @dataclass
@@ -354,6 +357,9 @@ class ArcDpsCombatMonitor:
         self._blade_count = 0
         self._cc_bar_visible = False
         self._weapon_set: Optional[str] = None
+        self._last_skill_id: Optional[int] = None
+        self._skill_activation_sequence = 0
+        self._last_skill_activated_at: Optional[float] = None
         self._skill_lookups_in_progress: set[int] = set()
         self._seen_event_ids: OrderedDict[
             tuple[int, int, int, int, int, int, int],
@@ -385,6 +391,9 @@ class ArcDpsCombatMonitor:
                 blade_count=self._blade_count,
                 cc_bar_visible=self._cc_bar_visible,
                 weapon_set=self._weapon_set,
+                last_skill_id=self._last_skill_id,
+                skill_activation_sequence=self._skill_activation_sequence,
+                last_skill_activated_at=self._last_skill_activated_at,
             )
 
     def ingest_payload(self, payload: bytes) -> None:
@@ -548,6 +557,9 @@ class ArcDpsCombatMonitor:
         if event.skill_id <= 0:
             return
         activated_at = self._arc_time_to_monotonic(event.time_ms)
+        self._last_skill_id = event.skill_id
+        self._skill_activation_sequence += 1
+        self._last_skill_activated_at = activated_at
         self._skill_records[event.skill_id] = _SkillRecord(
             skill_id=event.skill_id,
             activated_at=activated_at,

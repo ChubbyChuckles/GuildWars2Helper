@@ -539,12 +539,17 @@ def do_condition_virtuoso_rotation(
     telemetry_supplier: Callable[[], CombatTelemetrySnapshot],
     cc_supplier: Callable[[], bool],
     update_status: Optional[Callable[[str], None]] = None,
+    planner: Optional[ConditionVirtuosoPlanner] = None,
 ) -> None:
     """Run the adaptive condition Virtuoso priority loop from live telemetry."""
 
-    planner = ConditionVirtuosoPlanner()
+    planner = planner or ConditionVirtuosoPlanner()
     last_status = ""
     last_status_at = 0.0
+    expected_skill_ids: tuple[int, ...] = ()
+    expected_sequence = 0
+    expected_sent_at = 0.0
+    expected_deadline = 0.0
 
     def report(message: str) -> None:
         nonlocal last_status, last_status_at
@@ -559,6 +564,26 @@ def do_condition_virtuoso_rotation(
 
     while not stop_event.is_set():
         snapshot = telemetry_supplier()
+        if expected_skill_ids and snapshot.skill_activation_sequence > expected_sequence:
+            expected_sequence = snapshot.skill_activation_sequence
+            activated_at = snapshot.last_skill_activated_at or 0.0
+            if activated_at >= expected_sent_at - 0.1 and snapshot.last_skill_id in _WRONG_VIRTUOSO_SKILLS:
+                expected_text = ", ".join(map(str, expected_skill_ids))
+                report(
+                    "Condition Virtuoso stopped: expected skill "
+                    f"{expected_text}, but ArcDPS observed {snapshot.last_skill_id}. "
+                    "Check GW2_CV_*_KEY bindings in .env."
+                )
+                stop_event.set()
+                continue
+            if snapshot.last_skill_id in expected_skill_ids:
+                expected_skill_ids = ()
+        if expected_skill_ids and time.monotonic() >= expected_deadline:
+            report(
+                "Condition Virtuoso could not confirm the previous cast from ArcDPS; "
+                "continuing with live HUD readiness."
+            )
+            expected_skill_ids = ()
         decision = planner.choose(
             snapshot,
             time.monotonic(),
@@ -578,11 +603,22 @@ def do_condition_virtuoso_rotation(
             report(f"Condition Virtuoso input failed: {exc}")
             stop_event.wait(0.2)
             continue
-        planner.record_action(decision, time.monotonic())
+        sent_at = time.monotonic()
+        planner.record_action(decision, sent_at)
+        expected_skill_ids = decision.expected_skill_ids
+        expected_sequence = snapshot.skill_activation_sequence
+        expected_sent_at = sent_at
+        expected_deadline = sent_at + 3.0
         report(f"Condition Virtuoso: {decision.label} ({decision.reason}).")
         stop_event.wait(decision.delay_seconds)
 
     report("Condition Virtuoso rotation stopped.")
+
+
+_WRONG_VIRTUOSO_SKILLS = {
+    10186,  # Temporal Curtain (Focus 4)
+    10280,  # Illusionary Riposte (Sword 4)
+}
 
 
 def _activate_gw2_window() -> bool:

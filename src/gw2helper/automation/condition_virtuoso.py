@@ -8,6 +8,19 @@ from typing import Optional
 
 from ..services.arcdps_telemetry import CombatTelemetrySnapshot, SkillCooldown
 
+_SKILL_FLYING_CUTTER = 62510
+_SKILL_BLADECALL = 62560
+_SKILL_UNSTABLE_BLADESTORM = 62607
+_SKILL_HARMONY = 62586
+_SKILL_SORROW = 62616
+_SKILL_DISTORTION = 62602
+_SKILL_BLADETURN = 62597
+_SKILL_SWORDSMAN = 10174
+_SKILL_WARDEN = 10282
+_SKILL_SIGNET_ETHER = 21750
+_SKILL_SIGNET_ILLUSIONS = 10247
+_SKILL_THOUSAND_CUTS = 24755
+
 
 @dataclass(frozen=True)
 class ConditionVirtuosoKeybinds:
@@ -15,35 +28,44 @@ class ConditionVirtuosoKeybinds:
 
     weapon_2: str = "2"
     weapon_3: str = "3"
-    offhand_4: str = "4"
-    offhand_5: str = "5"
+    weapon_5: str = "5"
+    swordsman: str = "5"
+    warden: str = "5"
     harmony: str = "{F1}"
     sorrow: str = "{F2}"
     distortion: str = "{F3}"
+    bladeturn: str = "{F5}"
     signet_of_ether: str = "b"
     thousand_cuts: str = "r"
     weapon_swap: str = "°"
     auto_attack: str = "1"
-    signet_of_illusions: Optional[str] = None
+    signet_of_illusions: Optional[str] = "q"
 
     @classmethod
     def from_environment(cls) -> "ConditionVirtuosoKeybinds":
-        """Load optional bindings without guessing a player's utility key."""
+        """Load local bindings while retaining the benchmark action defaults."""
 
+        weapon_5 = _configured_key(
+            "GW2_CV_WEAPON_5_KEY",
+            _configured_key("GW2_CV_OFFHAND_5_KEY", "5"),
+        )
         return cls(
             weapon_2=_configured_key("GW2_CV_WEAPON_2_KEY", "2"),
             weapon_3=_configured_key("GW2_CV_WEAPON_3_KEY", "3"),
-            offhand_4=_configured_key("GW2_CV_OFFHAND_4_KEY", "4"),
-            offhand_5=_configured_key("GW2_CV_OFFHAND_5_KEY", "5"),
+            weapon_5=weapon_5,
+            swordsman=_configured_key("GW2_CV_SWORDSMAN_KEY", weapon_5),
+            warden=_configured_key("GW2_CV_WARDEN_KEY", weapon_5),
             harmony=_configured_key("GW2_CV_HARMONY_KEY", "{F1}"),
             sorrow=_configured_key("GW2_CV_SORROW_KEY", "{F2}"),
             distortion=_configured_key("GW2_CV_DISTORTION_KEY", "{F3}"),
+            bladeturn=_configured_key("GW2_CV_BLADETURN_KEY", "{F5}"),
             signet_of_ether=_configured_key("GW2_CV_SIGNET_ETHER_KEY", "b"),
             thousand_cuts=_configured_key("GW2_CV_THOUSAND_CUTS_KEY", "r"),
             weapon_swap=_configured_key("GW2_CV_WEAPON_SWAP_KEY", "°"),
             auto_attack=_configured_key("GW2_CV_AUTO_ATTACK_KEY", "1"),
             signet_of_illusions=_configured_optional_key(
-                "GW2_CV_SIGNET_ILLUSIONS_KEY"
+                "GW2_CV_SIGNET_ILLUSIONS_KEY",
+                "q",
             ),
         )
 
@@ -55,14 +77,29 @@ class RotationDecision:
     slot: Optional[str]
     delay_seconds: float
     reason: str
+    expected_skill_ids: tuple[int, ...] = ()
+    opener_step: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class _OpenerStep:
+    label: str
+    key_attribute: str
+    slot: Optional[str]
+    expected_skill_ids: tuple[int, ...]
+    base_delay_seconds: float
+    reason: str
+    required_blades: int = 0
+    optional: bool = False
 
 
 class ConditionVirtuosoPlanner:
     """Choose the next safe action from current skill, blade, and buff state."""
 
-    _SAME_SLOT_GUARD_SECONDS = 0.38
+    _SAME_SLOT_GUARD_SECONDS = 0.45
     _SIGNET_ILLUSIONS_GUARD_SECONDS = 45.0
     _WARDEN_RESET_WAIT_SECONDS = 1.0
+    _OPENER_TIMEOUT_SECONDS = 20.0
     _HARD_CONTROL_EFFECTS = {
         "daze",
         "fear",
@@ -72,7 +109,72 @@ class ConditionVirtuosoPlanner:
     }
     _TIMING_DEBUFFS = {"chilled", "slow", "immobilized"}
 
-    def __init__(self, keybinds: Optional[ConditionVirtuosoKeybinds] = None) -> None:
+    _OPENER = (
+        _OpenerStep(
+            "Phantasmal Swordsman", "swordsman", "Weapon_5", (_SKILL_SWORDSMAN,), 0.82, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Weapon Swap", "weapon_swap", "WeaponSwap", (), 0.20, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Bladecall", "weapon_2", "Weapon_2", (_SKILL_BLADECALL,), 0.44, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Phantasmal Warden", "warden", "Weapon_5", (_SKILL_WARDEN,), 0.45, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Signet of the Ether", "signet_of_ether", "Heal", (_SKILL_SIGNET_ETHER,), 0.90, "reset Phantasmal Warden"
+        ),
+        _OpenerStep(
+            "Bladesong Harmony", "harmony", "Profession_1", (_SKILL_HARMONY,), 0.64, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Phantasmal Warden", "warden", "Weapon_5", (_SKILL_WARDEN,), 0.45, "Signet of the Ether reset"
+        ),
+        _OpenerStep(
+            "Thousand Cuts", "thousand_cuts", "Elite", (_SKILL_THOUSAND_CUTS,), 0.12, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Bladesong Sorrow", "sorrow", "Profession_2", (_SKILL_SORROW,), 0.48, "five blades", required_blades=5
+        ),
+        _OpenerStep(
+            "Bladesong Harmony", "harmony", "Profession_1", (_SKILL_HARMONY,), 0.64, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Bladecall", "weapon_2", "Weapon_2", (_SKILL_BLADECALL,), 0.44, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Signet of Illusions", "signet_of_illusions", None, (_SKILL_SIGNET_ILLUSIONS,), 0.12, "reset Bladesongs", optional=True
+        ),
+        _OpenerStep(
+            "Bladesong Sorrow", "sorrow", "Profession_2", (_SKILL_SORROW,), 0.48, "five blades", required_blades=5
+        ),
+        _OpenerStep(
+            "Bladesong Harmony", "harmony", "Profession_1", (_SKILL_HARMONY,), 0.64, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Unstable Bladestorm", "weapon_3", "Weapon_3", (_SKILL_UNSTABLE_BLADESTORM,), 0.44, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Bladecall", "weapon_2", "Weapon_2", (_SKILL_BLADECALL,), 0.44, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Weapon Swap", "weapon_swap", "WeaponSwap", (), 0.20, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Phantasmal Swordsman", "swordsman", "Weapon_5", (_SKILL_SWORDSMAN,), 0.82, "benchmark opener"
+        ),
+        _OpenerStep(
+            "Bladeturn Requiem", "bladeturn", "Profession_5", (_SKILL_BLADETURN,), 0.15, "five blades", required_blades=5
+        ),
+    )
+
+    def __init__(
+        self,
+        keybinds: Optional[ConditionVirtuosoKeybinds] = None,
+        *,
+        use_opener: bool = True,
+    ) -> None:
         self._keybinds = keybinds or ConditionVirtuosoKeybinds.from_environment()
         self._weapon_set = "sword"
         self._pending_weapon_swap = False
@@ -83,6 +185,9 @@ class ConditionVirtuosoPlanner:
         self._ignore_hud_weapon_set_until = 0.0
         self._slot_blocked_until: dict[str, float] = {}
         self._last_signet_illusions_at = float("-inf")
+        self._opener_index = 0
+        self._opener_complete = not use_opener
+        self._opener_started_at: Optional[float] = None
 
     def choose(
         self,
@@ -106,6 +211,22 @@ class ConditionVirtuosoPlanner:
             return None
 
         readiness = {skill.slot: skill.ready for skill in snapshot.skills if skill.slot}
+        if not self._opener_complete:
+            opener_decision = self._choose_opener(
+                snapshot,
+                readiness,
+                buff_names,
+                now,
+            )
+            if opener_decision is not None:
+                return opener_decision
+            if (
+                self._opener_started_at is not None
+                and now - self._opener_started_at >= self._OPENER_TIMEOUT_SECONDS
+            ):
+                self._opener_complete = True
+            else:
+                return None
         timing_delay = self._timing_delay(buff_names)
 
         if (
@@ -122,6 +243,15 @@ class ConditionVirtuosoPlanner:
             )
 
         if snapshot.blade_count >= 5:
+            if self._ready(readiness, "Profession_5", now):
+                return self._decision(
+                    self._keybinds.bladeturn,
+                    "Bladeturn Requiem",
+                    "Profession_5",
+                    timing_delay,
+                    "five blades",
+                    expected_skill_ids=(_SKILL_BLADETURN,),
+                )
             if self._ready(readiness, "Profession_2", now):
                 return self._decision(
                     self._keybinds.sorrow,
@@ -129,6 +259,7 @@ class ConditionVirtuosoPlanner:
                     "Profession_2",
                     timing_delay,
                     "five blades",
+                    expected_skill_ids=(_SKILL_SORROW,),
                 )
             if self._ready(readiness, "Profession_1", now):
                 return self._decision(
@@ -137,6 +268,7 @@ class ConditionVirtuosoPlanner:
                     "Profession_1",
                     timing_delay,
                     "five blades",
+                    expected_skill_ids=(_SKILL_HARMONY,),
                 )
 
         if self._weapon_set == "focus" and self._pending_signet_reset:
@@ -147,18 +279,20 @@ class ConditionVirtuosoPlanner:
                     "Heal",
                     timing_delay,
                     "reset Phantasmal Warden",
+                    expected_skill_ids=(_SKILL_SIGNET_ETHER,),
                 )
             self._pending_signet_reset = False
             self._pending_weapon_swap = True
 
         if self._weapon_set == "focus" and self._awaiting_warden_reset_until:
-            if self._ready(readiness, "Weapon_4", now):
+            if self._ready(readiness, "Weapon_5", now):
                 return self._decision(
-                    self._keybinds.offhand_4,
+                    self._keybinds.warden,
                     "Phantasmal Warden",
-                    "Weapon_4",
+                    "Weapon_5",
                     timing_delay,
                     "Signet of the Ether reset",
+                    expected_skill_ids=(_SKILL_WARDEN,),
                 )
             if now < self._awaiting_warden_reset_until:
                 return None
@@ -174,35 +308,24 @@ class ConditionVirtuosoPlanner:
                 "off-hand phantasm complete",
             )
 
-        if self._weapon_set == "sword" and self._ready(readiness, "Weapon_4", now):
+        if self._weapon_set == "sword" and self._ready(readiness, "Weapon_5", now):
             return self._decision(
-                self._keybinds.offhand_4,
+                self._keybinds.swordsman,
                 "Phantasmal Swordsman",
-                "Weapon_4",
-                timing_delay,
-                "sword priority",
-            )
-
-        if (
-            self._weapon_set == "sword"
-            and snapshot.blade_count >= 5
-            and self._ready(readiness, "Weapon_5", now)
-        ):
-            return self._decision(
-                self._keybinds.offhand_5,
-                "Bladeturn Requiem",
                 "Weapon_5",
                 timing_delay,
-                "five blades",
+                "sword priority",
+                expected_skill_ids=(_SKILL_SWORDSMAN,),
             )
 
-        if self._weapon_set == "focus" and self._ready(readiness, "Weapon_4", now):
+        if self._weapon_set == "focus" and self._ready(readiness, "Weapon_5", now):
             return self._decision(
-                self._keybinds.offhand_4,
+                self._keybinds.warden,
                 "Phantasmal Warden",
-                "Weapon_4",
+                "Weapon_5",
                 timing_delay,
                 "focus priority",
+                expected_skill_ids=(_SKILL_WARDEN,),
             )
 
         if self._ready(readiness, "Elite", now):
@@ -212,6 +335,7 @@ class ConditionVirtuosoPlanner:
                 "Elite",
                 timing_delay,
                 "elite off cooldown",
+                expected_skill_ids=(_SKILL_THOUSAND_CUTS,),
             )
 
         if self._ready(readiness, "Weapon_3", now):
@@ -221,6 +345,7 @@ class ConditionVirtuosoPlanner:
                 "Weapon_3",
                 timing_delay,
                 "off cooldown",
+                expected_skill_ids=(_SKILL_UNSTABLE_BLADESTORM,),
             )
 
         if self._ready(readiness, "Weapon_2", now):
@@ -230,6 +355,7 @@ class ConditionVirtuosoPlanner:
                 "Weapon_2",
                 timing_delay,
                 "off cooldown",
+                expected_skill_ids=(_SKILL_BLADECALL,),
             )
 
         if self._can_use_signet_of_illusions(readiness, now):
@@ -239,6 +365,7 @@ class ConditionVirtuosoPlanner:
                 None,
                 timing_delay,
                 "Bladesongs unavailable",
+                expected_skill_ids=(_SKILL_SIGNET_ILLUSIONS,),
             )
 
         if self._ready(readiness, "WeaponSwap", now):
@@ -250,13 +377,7 @@ class ConditionVirtuosoPlanner:
                 "continue weapon loop",
             )
 
-        return self._decision(
-            self._keybinds.auto_attack,
-            "Auto Attack",
-            None,
-            timing_delay,
-            "no priority skill ready",
-        )
+        return None
 
     def record_action(self, decision: RotationDecision, now: float) -> None:
         """Advance local loop state only after the input was sent successfully."""
@@ -268,10 +389,20 @@ class ConditionVirtuosoPlanner:
                 now + self._SAME_SLOT_GUARD_SECONDS,
             )
 
-        if decision.slot == "Weapon_4":
-            if self._weapon_set == "sword":
-                self._pending_weapon_swap = True
-            elif self._focus_warden_reset_used:
+        if decision.opener_step is not None:
+            if decision.slot == "WeaponSwap":
+                self._toggle_weapon_set(now)
+            if decision.opener_step == self._opener_index:
+                self._opener_index += 1
+            if self._opener_index >= len(self._OPENER):
+                self._opener_complete = True
+                self._pending_weapon_swap = self._weapon_set == "sword"
+            return
+
+        if decision.label == "Phantasmal Swordsman":
+            self._pending_weapon_swap = True
+        elif decision.label == "Phantasmal Warden":
+            if self._focus_warden_reset_used:
                 self._pending_weapon_swap = True
             else:
                 self._pending_signet_reset = True
@@ -280,14 +411,61 @@ class ConditionVirtuosoPlanner:
             self._focus_warden_reset_used = True
             self._awaiting_warden_reset_until = now + self._WARDEN_RESET_WAIT_SECONDS
         elif decision.slot == "WeaponSwap":
-            self._weapon_set = "focus" if self._weapon_set == "sword" else "sword"
-            self._pending_weapon_swap = False
-            self._pending_signet_reset = False
-            self._focus_warden_reset_used = False
-            self._awaiting_warden_reset_until = 0.0
-            self._ignore_hud_weapon_set_until = now + 0.65
+            self._toggle_weapon_set(now)
         elif decision.label == "Signet of Illusions":
             self._last_signet_illusions_at = now
+
+    def _choose_opener(
+        self,
+        snapshot: CombatTelemetrySnapshot,
+        readiness: dict[Optional[str], Optional[bool]],
+        buff_names: set[str],
+        now: float,
+    ) -> Optional[RotationDecision]:
+        if self._opener_started_at is None:
+            self._opener_started_at = now
+
+        if self._opener_index == 0 and self._weapon_set != "sword":
+            if not self._ready(readiness, "WeaponSwap", now):
+                return None
+            return self._decision(
+                self._keybinds.weapon_swap,
+                "Weapon Swap",
+                "WeaponSwap",
+                self._scaled_delay(0.20, buff_names),
+                "move to Sword set for opener",
+            )
+
+        while self._opener_index < len(self._OPENER):
+            step = self._OPENER[self._opener_index]
+            key = getattr(self._keybinds, step.key_attribute)
+            if step.optional and not key:
+                self._opener_index += 1
+                continue
+            if step.required_blades and snapshot.blade_count < step.required_blades:
+                return None
+            if step.slot and not self._ready(readiness, step.slot, now):
+                return None
+            return self._decision(
+                str(key),
+                step.label,
+                step.slot,
+                self._scaled_delay(step.base_delay_seconds, buff_names),
+                step.reason,
+                expected_skill_ids=step.expected_skill_ids,
+                opener_step=self._opener_index,
+            )
+
+        self._opener_complete = True
+        return None
+
+    def _toggle_weapon_set(self, now: float) -> None:
+        self._weapon_set = "focus" if self._weapon_set == "sword" else "sword"
+        self._pending_weapon_swap = False
+        self._pending_signet_reset = False
+        self._focus_warden_reset_used = False
+        self._awaiting_warden_reset_until = 0.0
+        self._ignore_hud_weapon_set_until = now + 0.65
 
     def _can_use_signet_of_illusions(
         self,
@@ -309,25 +487,32 @@ class ConditionVirtuosoPlanner:
     ) -> bool:
         return bool(readiness.get(slot) is True and now >= self._slot_blocked_until.get(slot, 0.0))
 
-    @staticmethod
-    def _timing_delay(buff_names: set[str]) -> float:
-        if ConditionVirtuosoPlanner._TIMING_DEBUFFS & buff_names:
-            return 0.24
-        if "quickness" in buff_names:
-            return 0.06
-        # With no Alacrity, actual HUD readiness determines the next skill;
-        # the longer queue interval avoids assuming benchmark recharge timing.
-        if "alacrity" not in buff_names:
-            return 0.14
-        return 0.14
+    def _timing_delay(self, buff_names: set[str]) -> float:
+        return self._scaled_delay(0.42, buff_names)
 
     @staticmethod
+    def _timing_multiplier(buff_names: set[str]) -> float:
+        if "slow" in buff_names:
+            return 1.67
+        if "chilled" in buff_names or "immobilized" in buff_names:
+            return 1.25
+        if "quickness" not in buff_names:
+            return 1.45
+        return 1.0
+
+    def _scaled_delay(self, base_delay_seconds: float, buff_names: set[str]) -> float:
+        return base_delay_seconds * self._timing_multiplier(buff_names)
+
     def _decision(
+        self,
         key: str,
         label: str,
         slot: Optional[str],
         delay_seconds: float,
         reason: str,
+        *,
+        expected_skill_ids: tuple[int, ...] = (),
+        opener_step: Optional[int] = None,
     ) -> RotationDecision:
         return RotationDecision(
             key=key,
@@ -335,6 +520,8 @@ class ConditionVirtuosoPlanner:
             slot=slot,
             delay_seconds=delay_seconds,
             reason=reason,
+            expected_skill_ids=expected_skill_ids,
+            opener_step=opener_step,
         )
 
 
@@ -343,6 +530,11 @@ def _configured_key(environment_name: str, default: str) -> str:
     return configured or default
 
 
-def _configured_optional_key(environment_name: str) -> Optional[str]:
+def _configured_optional_key(
+    environment_name: str,
+    default: Optional[str] = None,
+) -> Optional[str]:
+    if environment_name not in os.environ:
+        return default
     configured = os.getenv(environment_name, "").strip()
     return configured or None

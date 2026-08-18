@@ -12,6 +12,7 @@ from gw2helper.services.arcdps_telemetry import (
     SkillCooldown,
 )
 from gw2helper.services.gw2_api import BankSummary
+from gw2helper.ui import main_window
 from gw2helper.ui.main_window import MainWindow
 
 
@@ -98,6 +99,28 @@ class MainWindowEmptyingTests(unittest.TestCase):
 
         self.assertTrue(event.isAccepted())
         toggle.assert_called_once_with()
+
+    @unittest.skipIf(main_window._PauseHotkey is None, "Windows-only global hotkey")
+    def test_global_pause_prefers_legacy_keyboard_hook(self) -> None:
+        hotkey = main_window._PauseHotkey(self.window)
+        callback = object()
+        with (
+            patch.object(main_window.keyboard, "add_hotkey", return_value=callback) as add_hotkey,
+            patch.object(main_window.keyboard, "remove_hotkey") as remove_hotkey,
+        ):
+            self.assertTrue(hotkey.register())
+            self.assertTrue(hotkey.is_registered)
+            hotkey.dispose()
+
+        add_hotkey.assert_called_once()
+        call_args, call_kwargs = add_hotkey.call_args
+        self.assertEqual(call_args[0], "pause")
+        self.assertTrue(callable(call_args[1]))
+        self.assertEqual(
+            call_kwargs,
+            {"suppress": False, "trigger_on_release": False},
+        )
+        remove_hotkey.assert_called_once_with(callback)
 
     def test_combat_telemetry_panel_renders_skill_and_buff_data(self) -> None:
         snapshot = CombatTelemetrySnapshot(
