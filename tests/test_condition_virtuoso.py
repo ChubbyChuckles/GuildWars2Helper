@@ -51,11 +51,15 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
 
         self.assertEqual(keybinds.signet_of_illusions, "7")
 
-    def test_signet_of_illusions_is_not_assumed_to_use_q(self) -> None:
+    def test_default_utility_bindings_match_the_live_profile(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             keybinds = ConditionVirtuosoKeybinds.from_environment()
 
-        self.assertIsNone(keybinds.signet_of_illusions)
+        self.assertEqual(keybinds.signet_of_ether, "b")
+        self.assertEqual(keybinds.signet_of_midnight, "q")
+        self.assertEqual(keybinds.signet_of_illusions, "e")
+        self.assertEqual(keybinds.signet_of_domination, "t")
+        self.assertEqual(keybinds.thousand_cuts, "r")
 
     def test_skips_optional_signet_when_utility_template_is_not_ready(self) -> None:
         planner = ConditionVirtuosoPlanner()
@@ -70,6 +74,23 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.label, "Bladesong Sorrow")
+
+    def test_opener_uses_e_for_ready_signet_of_illusions(self) -> None:
+        planner = ConditionVirtuosoPlanner(
+            ConditionVirtuosoKeybinds(signet_of_illusions="e")
+        )
+        planner._opener_index = 11
+        decision = planner.choose(
+            _snapshot(
+                skills=(_skill("Utility_Illusions"),),
+                blades=5,
+            ),
+            100.0,
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.label, "Signet of Illusions")
+        self.assertEqual(decision.key, "e")
 
     def test_recovers_from_mismatched_optional_signet(self) -> None:
         planner = ConditionVirtuosoPlanner(
@@ -94,6 +115,24 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
         recovered = planner.choose(snapshot, 100.3)
         self.assertIsNotNone(recovered)
         self.assertEqual(recovered.label, "Bladesong Sorrow")
+
+    def test_unrelated_native_activation_does_not_disable_bladecall(self) -> None:
+        planner = ConditionVirtuosoPlanner(use_opener=False)
+        snapshot = _snapshot(skills=(_skill("Weapon_2"),))
+        bladecall = planner.choose(snapshot, 100.0)
+
+        self.assertIsNotNone(bladecall)
+        self.assertEqual(bladecall.label, "Bladecall")
+        planner.recover_from_interruption(
+            bladecall,
+            snapshot,
+            100.1,
+            observed_skill_id=10174,
+        )
+
+        recovered = planner.choose(snapshot, 100.3)
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered.label, "Bladecall")
 
     def test_recovers_from_a_blocked_opener_step_without_long_stall(self) -> None:
         planner = ConditionVirtuosoPlanner()

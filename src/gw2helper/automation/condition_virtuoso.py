@@ -36,10 +36,12 @@ class ConditionVirtuosoKeybinds:
     distortion: str = "{F3}"
     bladeturn: str = "{F5}"
     signet_of_ether: str = "b"
+    signet_of_midnight: str = "q"
+    signet_of_domination: str = "t"
     thousand_cuts: str = "r"
     weapon_swap: str = "°"
     auto_attack: str = "1"
-    signet_of_illusions: Optional[str] = None
+    signet_of_illusions: Optional[str] = "e"
 
     @classmethod
     def from_environment(cls) -> "ConditionVirtuosoKeybinds":
@@ -60,12 +62,14 @@ class ConditionVirtuosoKeybinds:
             distortion=_configured_key("GW2_CV_DISTORTION_KEY", "{F3}"),
             bladeturn=_configured_key("GW2_CV_BLADETURN_KEY", "{F5}"),
             signet_of_ether=_configured_key("GW2_CV_SIGNET_ETHER_KEY", "b"),
+            signet_of_midnight=_configured_key("GW2_CV_SIGNET_MIDNIGHT_KEY", "q"),
+            signet_of_domination=_configured_key("GW2_CV_SIGNET_DOMINATION_KEY", "t"),
             thousand_cuts=_configured_key("GW2_CV_THOUSAND_CUTS_KEY", "r"),
             weapon_swap=_configured_key("GW2_CV_WEAPON_SWAP_KEY", "°"),
             auto_attack=_configured_key("GW2_CV_AUTO_ATTACK_KEY", "1"),
             signet_of_illusions=_configured_optional_key(
                 "GW2_CV_SIGNET_ILLUSIONS_KEY",
-                None,
+                "e",
             ),
         )
 
@@ -396,7 +400,7 @@ class ConditionVirtuosoPlanner:
             return self._decision(
                 self._keybinds.signet_of_illusions or "",
                 "Signet of Illusions",
-                None,
+                "Utility_Illusions",
                 timing_delay,
                 "Bladesongs unavailable",
                 expected_skill_ids=(_SKILL_SIGNET_ILLUSIONS,),
@@ -471,12 +475,7 @@ class ConditionVirtuosoPlanner:
     ) -> None:
         """Return to live priority decisions after a cancelled or mismatched input."""
 
-        if (
-            observed_skill_id is not None
-            and decision.expected_skill_ids
-            and observed_skill_id not in decision.expected_skill_ids
-        ):
-            self._disabled_skill_ids.update(decision.expected_skill_ids)
+        del observed_skill_id
         if decision.opener_step is not None:
             self._opener_complete = True
         if snapshot.weapon_set in {"focus", "sword"}:
@@ -488,6 +487,17 @@ class ConditionVirtuosoPlanner:
         self._slot_blocked_until.clear()
         self._next_action_at = now + 0.15
         self._resume_auto_attack = True
+
+    def disable_binding(
+        self,
+        decision: RotationDecision,
+        snapshot: CombatTelemetrySnapshot,
+        now: float,
+    ) -> None:
+        """Stop retrying one action after ArcDPS proves its physical key is wrong."""
+
+        self._disabled_skill_ids.update(decision.expected_skill_ids)
+        self.recover_from_interruption(decision, snapshot, now)
 
     def _choose_opener(
         self,
