@@ -11,6 +11,7 @@ from gw2helper.services.arcdps_telemetry import (
     bhud_port_for_pid,
     decode_bhud_payload,
 )
+from gw2helper.services import arcdps_telemetry
 from gw2helper.services.gw2_api import SkillMetadata
 
 
@@ -103,6 +104,9 @@ class _Clock:
 
 
 class ArcDpsTelemetryTests(unittest.TestCase):
+    def test_hud_poll_interval_is_shorter_than_a_quickness_cast_window(self) -> None:
+        self.assertEqual(arcdps_telemetry._HUD_SCAN_SECONDS, 0.30)
+
     def test_port_uses_bhud_v2_pid_plus_one_formula(self) -> None:
         self.assertEqual(bhud_port_for_pid(10828), 59981)
 

@@ -101,6 +101,8 @@ else:  # pragma: no cover - optional dependency
 Region = tuple[int, int, int, int]
 _GW2_WINDOW_TITLE = "Guild Wars 2"
 _ASSET_DIRECTORY_NAME = "assets"
+_HUD_MATCH_THRESHOLD = 0.85
+_HUD_TEMPLATE_CACHE: dict[str, np.ndarray] = {}
 
 
 def _is_gw2_window_foreground() -> bool:
@@ -165,8 +167,32 @@ def find_image_in_image(
     big_image_gray = cv2.cvtColor(big_image, cv2.COLOR_BGR2GRAY)
     small_image_gray = cv2.cvtColor(small_image, cv2.COLOR_BGR2GRAY)
     result = cv2.matchTemplate(big_image_gray, small_image_gray, cv2.TM_CCOEFF_NORMED)
-    threshold = 0.85
-    locations = np.where(result >= threshold)
+    locations = np.where(result >= _HUD_MATCH_THRESHOLD)
+    return list(zip(*locations[::-1]))
+
+
+def _hud_template_gray(template: str) -> np.ndarray:
+    template_path = _asset_path(template)
+    cached = _HUD_TEMPLATE_CACHE.get(template_path)
+    if cached is not None:
+        return cached
+    image = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise FileNotFoundError(f"Could not load HUD template '{template_path}'.")
+    _HUD_TEMPLATE_CACHE[template_path] = image
+    return image
+
+
+def _find_hud_template_locations(
+    hud_gray: np.ndarray,
+    template: str,
+) -> list[tuple[int, int]]:
+    result = cv2.matchTemplate(
+        hud_gray,
+        _hud_template_gray(template),
+        cv2.TM_CCOEFF_NORMED,
+    )
+    locations = np.where(result >= _HUD_MATCH_THRESHOLD)
     return list(zip(*locations[::-1]))
 
 
@@ -256,11 +282,24 @@ def read_combat_hud_status() -> dict[str, object]:
     screenshot = take_screenshot((1514, 1986, 766, 160))
     screenshot_path = _capture_path("combat_hud.png")
     screenshot.save(screenshot_path)
+    screenshot_array = np.asarray(screenshot)
+    if screenshot_array.ndim == 2:
+        hud_gray = screenshot_array
+    elif screenshot_array.shape[2] == 4:
+        hud_gray = cv2.cvtColor(screenshot_array, cv2.COLOR_RGBA2GRAY)
+    else:
+        hud_gray = cv2.cvtColor(screenshot_array, cv2.COLOR_RGB2GRAY)
+    template_locations: dict[str, list[tuple[int, int]]] = {}
 
     def is_ready(template: str) -> bool:
-        return bool(find_image_in_image(screenshot_path, template))
+        if template not in template_locations:
+            template_locations[template] = _find_hud_template_locations(
+                hud_gray,
+                template,
+            )
+        return bool(template_locations[template])
 
-    blade_count = len(find_image_in_image(screenshot_path, "blade.png"))
+    blade_count = len(_find_hud_template_locations(hud_gray, "blade.png"))
 
     skill_4_focus_ready = is_ready("skill_4_focus.png")
     skill_4_sword_ready = is_ready("skill_4_sword.png")

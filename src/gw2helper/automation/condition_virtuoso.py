@@ -101,6 +101,8 @@ class ConditionVirtuosoPlanner:
     """Choose the next safe action from current skill, blade, and buff state."""
 
     _SAME_SLOT_GUARD_SECONDS = 0.45
+    _AUTO_ATTACK_GUARD_SECONDS = 0.75
+    _SWORDSMEN_PER_SWORD_SET = 2
     _SIGNET_ILLUSIONS_GUARD_SECONDS = 45.0
     _WARDEN_RESET_WAIT_SECONDS = 1.0
     _OPENER_TIMEOUT_SECONDS = 20.0
@@ -192,6 +194,8 @@ class ConditionVirtuosoPlanner:
         self._last_signet_illusions_at = float("-inf")
         self._disabled_skill_ids: set[int] = set()
         self._resume_auto_attack = False
+        self._last_auto_attack_at = float("-inf")
+        self._swordsmen_since_swap = 0
         self._opener_index = 0
         self._opener_complete = not use_opener
         self._opener_started_at: Optional[float] = None
@@ -257,17 +261,6 @@ class ConditionVirtuosoPlanner:
             )
 
         if snapshot.blade_count >= 5:
-            if self._ready(readiness, "Profession_5", now) and self._is_enabled(
-                (_SKILL_BLADETURN,)
-            ):
-                return self._decision(
-                    self._keybinds.bladeturn,
-                    "Bladeturn Requiem",
-                    "Profession_5",
-                    timing_delay,
-                    "five blades",
-                    expected_skill_ids=(_SKILL_BLADETURN,),
-                )
             if self._ready(readiness, "Profession_2", now) and self._is_enabled(
                 (_SKILL_SORROW,)
             ):
@@ -289,6 +282,17 @@ class ConditionVirtuosoPlanner:
                     timing_delay,
                     "five blades",
                     expected_skill_ids=(_SKILL_HARMONY,),
+                )
+            if self._ready(readiness, "Profession_5", now) and self._is_enabled(
+                (_SKILL_BLADETURN,)
+            ):
+                return self._decision(
+                    self._keybinds.bladeturn,
+                    "Bladeturn Requiem",
+                    "Profession_5",
+                    timing_delay,
+                    "five blades after Bladesongs",
+                    expected_skill_ids=(_SKILL_BLADETURN,),
                 )
 
         if self._weapon_set == "focus" and self._pending_signet_reset:
@@ -406,7 +410,7 @@ class ConditionVirtuosoPlanner:
                 expected_skill_ids=(_SKILL_SIGNET_ILLUSIONS,),
             )
 
-        if self._ready(readiness, "WeaponSwap", now):
+        if self._pending_weapon_swap and self._ready(readiness, "WeaponSwap", now):
             return self._decision(
                 self._keybinds.weapon_swap,
                 "Weapon Swap",
@@ -420,8 +424,17 @@ class ConditionVirtuosoPlanner:
                 self._keybinds.auto_attack,
                 "Resume Flying Cutter",
                 None,
-                timing_delay,
+                min(timing_delay, 0.20),
                 "recover after interrupted cast",
+            )
+
+        if now - self._last_auto_attack_at >= self._AUTO_ATTACK_GUARD_SECONDS:
+            return self._decision(
+                self._keybinds.auto_attack,
+                "Maintain Flying Cutter",
+                None,
+                min(timing_delay, 0.20),
+                "no priority action ready",
             )
 
         return None
@@ -448,7 +461,10 @@ class ConditionVirtuosoPlanner:
             return
 
         if decision.label == "Phantasmal Swordsman":
-            self._pending_weapon_swap = True
+            self._swordsmen_since_swap += 1
+            self._pending_weapon_swap = (
+                self._swordsmen_since_swap >= self._SWORDSMEN_PER_SWORD_SET
+            )
         elif decision.label == "Phantasmal Warden":
             if self._focus_warden_reset_used:
                 self._pending_weapon_swap = True
@@ -462,8 +478,9 @@ class ConditionVirtuosoPlanner:
             self._toggle_weapon_set(now)
         elif decision.label == "Signet of Illusions":
             self._last_signet_illusions_at = now
-        elif decision.label == "Resume Flying Cutter":
+        elif decision.label in {"Resume Flying Cutter", "Maintain Flying Cutter"}:
             self._resume_auto_attack = False
+            self._last_auto_attack_at = now
 
     def recover_from_interruption(
         self,
@@ -563,6 +580,7 @@ class ConditionVirtuosoPlanner:
 
     def _toggle_weapon_set(self, now: float) -> None:
         self._weapon_set = "focus" if self._weapon_set == "sword" else "sword"
+        self._swordsmen_since_swap = 0
         self._pending_weapon_swap = False
         self._pending_signet_reset = False
         self._focus_warden_reset_used = False

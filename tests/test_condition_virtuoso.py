@@ -149,7 +149,11 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
         planner = ConditionVirtuosoPlanner(use_opener=False)
         decision = planner.choose(
             _snapshot(
-                skills=(_skill("Profession_2"), _skill("Weapon_4")),
+                skills=(
+                    _skill("Profession_1"),
+                    _skill("Profession_2"),
+                    _skill("Profession_5"),
+                ),
                 blades=5,
             ),
             100.0,
@@ -159,7 +163,72 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
         self.assertEqual(decision.label, "Bladesong Sorrow")
         self.assertEqual(decision.key, "{F2}")
 
-    def test_uses_swordsman_then_swaps_offhand_set(self) -> None:
+    def test_casts_harmony_before_bladeturn_when_sorrow_is_unavailable(self) -> None:
+        planner = ConditionVirtuosoPlanner(use_opener=False)
+        decision = planner.choose(
+            _snapshot(
+                skills=(_skill("Profession_1"), _skill("Profession_5")),
+                blades=5,
+            ),
+            100.0,
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.label, "Bladesong Harmony")
+
+    def test_keeps_sword_set_for_a_second_swordsman_before_swapping(self) -> None:
+        planner = ConditionVirtuosoPlanner(use_opener=False)
+        quickness = (ActiveBuff(1187, "Quickness", 1, None),)
+        sword_ready = _snapshot(
+            skills=(_skill("Weapon_5"), _skill("WeaponSwap")),
+            buffs=quickness,
+            weapon_set="sword",
+        )
+        first_swordsman = planner.choose(sword_ready, 100.0)
+
+        self.assertIsNotNone(first_swordsman)
+        self.assertEqual(first_swordsman.label, "Phantasmal Swordsman")
+        planner.record_action(first_swordsman, 100.0)
+
+        still_sword = _snapshot(
+            skills=(_skill("WeaponSwap"),),
+            buffs=quickness,
+            weapon_set="sword",
+        )
+        interim = planner.choose(still_sword, 100.5)
+
+        self.assertIsNotNone(interim)
+        self.assertEqual(interim.label, "Maintain Flying Cutter")
+        planner.record_action(interim, 100.5)
+
+        second_swordsman = planner.choose(sword_ready, 101.0)
+
+        self.assertIsNotNone(second_swordsman)
+        self.assertEqual(second_swordsman.label, "Phantasmal Swordsman")
+        planner.record_action(second_swordsman, 101.0)
+
+        swap = planner.choose(still_sword, 101.5)
+
+        self.assertIsNotNone(swap)
+        self.assertEqual(swap.label, "Weapon Swap")
+
+    def test_maintains_autoattack_when_no_priority_action_is_available(self) -> None:
+        planner = ConditionVirtuosoPlanner(use_opener=False)
+        idle = _snapshot(skills=())
+
+        first = planner.choose(idle, 100.0)
+
+        self.assertIsNotNone(first)
+        self.assertEqual(first.label, "Maintain Flying Cutter")
+        planner.record_action(first, 100.0)
+        self.assertIsNone(planner.choose(idle, 100.3))
+
+        resumed = planner.choose(idle, 100.8)
+
+        self.assertIsNotNone(resumed)
+        self.assertEqual(resumed.label, "Maintain Flying Cutter")
+
+    def test_uses_two_swordsmen_then_swaps_offhand_set(self) -> None:
         planner = ConditionVirtuosoPlanner(use_opener=False)
         initial = _snapshot(
             skills=(_skill("Weapon_5"), _skill("WeaponSwap")),
@@ -171,12 +240,17 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
         self.assertEqual(swordsman.key, "5")
         planner.record_action(swordsman, 100.0)
 
-        swap = planner.choose(initial, 100.9)
+        second_swordsman = planner.choose(initial, 100.9)
+        self.assertIsNotNone(second_swordsman)
+        self.assertEqual(second_swordsman.label, "Phantasmal Swordsman")
+        planner.record_action(second_swordsman, 100.9)
+
+        swap = planner.choose(initial, 101.4)
         self.assertIsNotNone(swap)
         self.assertEqual(swap.label, "Weapon Swap")
-        planner.record_action(swap, 100.9)
+        planner.record_action(swap, 101.4)
 
-        warden = planner.choose(initial, 101.4)
+        warden = planner.choose(initial, 101.9)
         self.assertIsNotNone(warden)
         self.assertEqual(warden.label, "Phantasmal Warden")
 
