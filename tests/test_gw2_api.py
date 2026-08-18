@@ -46,6 +46,20 @@ class _Session:
                     {"id": 4, "type": "Weapon", "rarity": "Exotic"},
                 ]
             )
+        if url.endswith("/skills"):
+            return _Response(
+                [
+                    {
+                        "id": 14375,
+                        "name": "Arcing Slice",
+                        "slot": "Profession_1",
+                        "facts": [
+                            {"type": "Recharge", "value": 8},
+                            {"type": "Damage", "hit_count": 1},
+                        ],
+                    }
+                ]
+            )
         return _Response(["Zojja", "Caithe"])
 
 
@@ -77,6 +91,17 @@ class Gw2ApiTests(unittest.TestCase):
             session.requests[0]["headers"],
             {"Authorization": "Bearer test-key"},
         )
+
+    def test_skill_metadata_reads_public_recharge_facts(self) -> None:
+        session = _Session()
+        client = gw2_api.Gw2ApiClient(api_key="test-key", session=session)
+
+        metadata = client.get_skill_metadata([14375])[14375]
+
+        self.assertEqual(metadata.name, "Arcing Slice")
+        self.assertEqual(metadata.slot, "Profession_1")
+        self.assertEqual(metadata.recharge_seconds, 8.0)
+        self.assertEqual(session.requests[0]["headers"], {})
 
     def test_api_key_loads_from_dotenv_file(self) -> None:
         with TemporaryDirectory() as temporary_directory:

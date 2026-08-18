@@ -30,6 +30,16 @@ class BankSummary:
     exotic_gear_items: int
 
 
+@dataclass(frozen=True)
+class SkillMetadata:
+    """Public skill data used to label native ArcDPS activation events."""
+
+    skill_id: int
+    name: str
+    slot: Optional[str]
+    recharge_seconds: Optional[float]
+
+
 def load_gw2_api_key() -> Optional[str]:
     """Load the account API key from the environment or a nearby ``.env`` file."""
 
@@ -105,6 +115,32 @@ class Gw2ApiClient:
             rare_gear_items=rare_gear_items,
             exotic_gear_items=exotic_gear_items,
         )
+
+    def get_skill_metadata(
+        self,
+        skill_ids: Iterable[int],
+    ) -> dict[int, SkillMetadata]:
+        """Return names, slots, and displayed recharge values for skills."""
+
+        unique_skill_ids = sorted({skill_id for skill_id in skill_ids if skill_id > 0})
+        metadata: dict[int, SkillMetadata] = {}
+        for batch in _batches(unique_skill_ids, _ITEM_BATCH_SIZE):
+            payload = self._get("skills", params={"ids": ",".join(map(str, batch))})
+            if not isinstance(payload, list):
+                raise Gw2ApiError("Guild Wars 2 returned invalid skill data.")
+            for skill in payload:
+                if not isinstance(skill, dict):
+                    continue
+                skill_id = _positive_item_id(skill.get("id"))
+                if skill_id is None:
+                    continue
+                metadata[skill_id] = SkillMetadata(
+                    skill_id=skill_id,
+                    name=_nonempty_text(skill.get("name"), f"Skill {skill_id}"),
+                    slot=_optional_text(skill.get("slot")),
+                    recharge_seconds=_skill_recharge(skill.get("facts")),
+                )
+        return metadata
 
     def _get_items(self, item_ids: Iterable[Optional[int]]) -> dict[int, dict[str, Any]]:
         unique_item_ids = sorted({item_id for item_id in item_ids if item_id is not None})
@@ -193,3 +229,30 @@ def _positive_count(value: object) -> int:
     except (TypeError, ValueError):
         return 1
     return max(1, count)
+
+
+def _optional_text(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _nonempty_text(value: object, fallback: str) -> str:
+    return _optional_text(value) or fallback
+
+
+def _skill_recharge(facts: object) -> Optional[float]:
+    if not isinstance(facts, list):
+        return None
+    recharge_values: list[float] = []
+    for fact in facts:
+        if not isinstance(fact, dict) or fact.get("type") != "Recharge":
+            continue
+        try:
+            recharge = float(fact.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if recharge > 0:
+            recharge_values.append(recharge)
+    return max(recharge_values, default=None)

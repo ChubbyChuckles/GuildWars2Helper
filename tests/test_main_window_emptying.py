@@ -6,6 +6,11 @@ from unittest.mock import patch
 from PyQt6 import QtWidgets
 
 from gw2helper import constants, persistence
+from gw2helper.services.arcdps_telemetry import (
+    ActiveBuff,
+    CombatTelemetrySnapshot,
+    SkillCooldown,
+)
 from gw2helper.services.gw2_api import BankSummary
 from gw2helper.ui.main_window import MainWindow
 
@@ -81,6 +86,25 @@ class MainWindowEmptyingTests(unittest.TestCase):
         self.assertEqual(self.window.pause_button.text(), "Start Rotation")
         self.assertTrue(self.window.pause_button.isEnabled())
         toggle.assert_called_once_with()
+
+    def test_combat_telemetry_panel_renders_skill_and_buff_data(self) -> None:
+        snapshot = CombatTelemetrySnapshot(
+            bridge_status="ArcDPS BHud connected",
+            character_loaded=True,
+            skills=(SkillCooldown(14375, "Arcing Slice", "Profession_1", False, 4.2),),
+            buffs=(ActiveBuff(1187, "Quickness", 1, 2.5),),
+        )
+        with patch.object(
+            self.window.controller,
+            "combat_telemetry_snapshot",
+            return_value=snapshot,
+        ):
+            self.window._refresh_combat_telemetry()
+
+        self.assertEqual(self.window.combat_bridge_label.text(), "ArcDPS BHud connected")
+        self.assertEqual(self.window.combat_skills_table.item(0, 0).text(), "Arcing Slice")
+        self.assertEqual(self.window.combat_skills_table.item(0, 2).text(), "4.2s")
+        self.assertEqual(self.window.combat_buffs_table.item(0, 0).text(), "Quickness")
 
 
 if __name__ == "__main__":

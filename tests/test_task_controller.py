@@ -8,7 +8,28 @@ from PyQt6 import QtCore
 
 from gw2helper import constants
 from gw2helper.controllers.task_controller import TaskController
+from gw2helper.services.arcdps_telemetry import CombatTelemetrySnapshot
 from gw2helper.services.gw2_api import BankSummary
+
+
+class _CombatMonitor:
+    def __init__(self) -> None:
+        self.started = False
+        self.stopped = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def snapshot(self) -> CombatTelemetrySnapshot:
+        return CombatTelemetrySnapshot(
+            bridge_status="ArcDPS BHud connected",
+            character_loaded=True,
+            skills=(),
+            buffs=(),
+        )
 
 
 class BankSummaryControllerTests(unittest.TestCase):
@@ -70,6 +91,18 @@ class BankSummaryControllerTests(unittest.TestCase):
         self.assertIn(True, stopped)
         self.assertIn(False, stopped)
         constants.set_combat_cc_enabled(False)
+
+    def test_controller_owns_combat_monitor_lifecycle(self) -> None:
+        monitor = _CombatMonitor()
+        controller = TaskController(combat_monitor=monitor)
+
+        controller.start_combat_monitor()
+        snapshot = controller.combat_telemetry_snapshot()
+        controller.stop_combat_monitor()
+
+        self.assertTrue(monitor.started)
+        self.assertTrue(monitor.stopped)
+        self.assertEqual(snapshot.bridge_status, "ArcDPS BHud connected")
 
 
 if __name__ == "__main__":

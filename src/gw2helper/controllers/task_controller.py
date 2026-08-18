@@ -9,6 +9,7 @@ from PyQt6 import QtCore
 
 from .. import constants
 from ..automation import tasks
+from ..services.arcdps_telemetry import ArcDpsCombatMonitor, CombatTelemetrySnapshot
 from ..services.gw2_api import Gw2ApiClient
 
 
@@ -22,7 +23,7 @@ class TaskController(QtCore.QObject):
     bank_summary_failed = QtCore.pyqtSignal(str)
     rotation_state_changed = QtCore.pyqtSignal(bool)
 
-    def __init__(self) -> None:
+    def __init__(self, combat_monitor: Optional[ArcDpsCombatMonitor] = None) -> None:
         super().__init__()
         self._farm_thread: Optional[Thread] = None
         self._pause_event = Event()
@@ -32,6 +33,9 @@ class TaskController(QtCore.QObject):
         self._bank_load_thread: Optional[Thread] = None
         self._rotation_thread: Optional[Thread] = None
         self._rotation_stop_event: Optional[Event] = None
+        self._combat_monitor = combat_monitor or ArcDpsCombatMonitor(
+            hud_supplier=tasks.read_combat_hud_status
+        )
 
     def set_empty_chars_enabled(self, enabled: bool) -> None:
         if constants.EMPTY_CHARS == enabled:
@@ -102,6 +106,15 @@ class TaskController(QtCore.QObject):
 
     def copy_next_event_code(self) -> Optional[str]:
         return tasks.clipboard_event_code()
+
+    def start_combat_monitor(self) -> None:
+        self._combat_monitor.start()
+
+    def stop_combat_monitor(self) -> None:
+        self._combat_monitor.stop()
+
+    def combat_telemetry_snapshot(self) -> CombatTelemetrySnapshot:
+        return self._combat_monitor.snapshot()
 
     def start_rotation(self) -> bool:
         """Start the legacy image-driven damage rotation in a daemon thread."""

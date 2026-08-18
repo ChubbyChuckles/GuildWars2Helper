@@ -247,6 +247,32 @@ def scan_skills():
     )
 
 
+def read_combat_hud_status() -> dict[str, bool]:
+    """Read visible action-bar readiness using the same templates as rotation."""
+
+    screenshot = take_screenshot((1514, 1986, 766, 160))
+    screenshot_path = _capture_path("combat_hud.png")
+    screenshot.save(screenshot_path)
+
+    def is_ready(template: str) -> bool:
+        return bool(find_image_in_image(screenshot_path, template))
+
+    return {
+        "Weapon_2": is_ready("skill_2.png"),
+        "Weapon_3": is_ready("skill_3.png"),
+        "Weapon_4": is_ready("skill_4_focus.png"),
+        "Weapon_5": is_ready("skill_5_focus.png") or is_ready("skill_5_sword.png"),
+        "Profession_1": is_ready("skill_f1.png"),
+        "Profession_2": is_ready("skill_f2.png"),
+        "Profession_3": is_ready("skill_f3.png"),
+        "Profession_5": is_ready("skill_f5.png"),
+        "Heal": is_ready("skill_heal.png"),
+        "Elite": is_ready("skill_ultimate.png"),
+        "WeaponSwap": is_ready("weapon_swap.png"),
+        "buff:Quickness": is_ready("quickness.png"),
+    }
+
+
 def do_opener():
     (
         skill_f3_ready,

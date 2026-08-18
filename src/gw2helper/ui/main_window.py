@@ -15,6 +15,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from .. import constants, persistence
 from ..automation import tasks
 from ..controllers.task_controller import TaskController
+from ..services.arcdps_telemetry import CombatTelemetrySnapshot
 from ..services.gw2_api import BankSummary
 
 if sys.platform == "win32":
@@ -357,6 +358,37 @@ QLabel {
     color: #d5dbff;
     font-size: 13px;
 }
+#CombatPanel {
+    background: rgba(20, 26, 49, 0.88);
+    border: 1px solid rgba(100, 151, 210, 0.38);
+    border-radius: 12px;
+}
+#CombatPanelTitle {
+    color: #e9efff;
+    font-size: 14px;
+    font-weight: 700;
+}
+#CombatBridgeStatus {
+    color: #b7c7ff;
+    font-size: 11px;
+    font-weight: 600;
+}
+#CombatSkillsTable, #CombatBuffsTable {
+    background: rgba(13, 18, 37, 0.78);
+    border: 1px solid rgba(91, 122, 190, 0.42);
+    border-radius: 8px;
+    color: #e8eeff;
+    gridline-color: rgba(92, 117, 177, 0.18);
+    selection-background-color: rgba(81, 105, 188, 0.4);
+}
+#CombatSkillsTable QHeaderView::section, #CombatBuffsTable QHeaderView::section {
+    background: rgba(39, 49, 86, 0.92);
+    border: none;
+    border-bottom: 1px solid rgba(100, 130, 200, 0.4);
+    color: #cfdcff;
+    padding: 5px 7px;
+    font-weight: 600;
+}
 QPushButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                                 stop:0 #5162f0, stop:1 #2e3bbd);
@@ -605,7 +637,56 @@ QToolTip {
         self.status_label.setWordWrap(True)
         panel_layout.addWidget(self.status_label)
 
-        content_layout.addWidget(main_panel, 1)
+        combat_panel = QtWidgets.QFrame()
+        combat_panel.setObjectName("CombatPanel")
+        combat_layout = QtWidgets.QVBoxLayout(combat_panel)
+        combat_layout.setContentsMargins(14, 12, 14, 12)
+        combat_layout.setSpacing(8)
+
+        combat_header = QtWidgets.QHBoxLayout()
+        combat_title = QtWidgets.QLabel("Combat Telemetry")
+        combat_title.setObjectName("CombatPanelTitle")
+        combat_header.addWidget(combat_title)
+        combat_header.addStretch()
+        self.combat_bridge_label = QtWidgets.QLabel("ArcDPS monitor waiting")
+        self.combat_bridge_label.setObjectName("CombatBridgeStatus")
+        combat_header.addWidget(self.combat_bridge_label)
+        combat_layout.addLayout(combat_header)
+
+        combat_tables = QtWidgets.QHBoxLayout()
+        combat_tables.setSpacing(10)
+
+        skills_column = QtWidgets.QVBoxLayout()
+        skills_label = QtWidgets.QLabel("Skills")
+        skills_label.setObjectName("CombatBridgeStatus")
+        skills_column.addWidget(skills_label)
+        self.combat_skills_table = self._create_combat_table(
+            "CombatSkillsTable",
+            ["Skill", "State", "Cooldown"],
+        )
+        self.combat_skills_table.setMinimumHeight(154)
+        skills_column.addWidget(self.combat_skills_table)
+        combat_tables.addLayout(skills_column, 3)
+
+        buffs_column = QtWidgets.QVBoxLayout()
+        buffs_label = QtWidgets.QLabel("Buffs")
+        buffs_label.setObjectName("CombatBridgeStatus")
+        buffs_column.addWidget(buffs_label)
+        self.combat_buffs_table = self._create_combat_table(
+            "CombatBuffsTable",
+            ["Buff", "Stacks", "Remaining"],
+        )
+        self.combat_buffs_table.setMinimumHeight(154)
+        buffs_column.addWidget(self.combat_buffs_table)
+        combat_tables.addLayout(buffs_column, 2)
+        combat_layout.addLayout(combat_tables)
+        panel_layout.addWidget(combat_panel)
+
+        content_scroll = QtWidgets.QScrollArea()
+        content_scroll.setWidgetResizable(True)
+        content_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        content_scroll.setWidget(main_panel)
+        content_layout.addWidget(content_scroll, 1)
 
         self.status_bar = StatusBar(self._content_frame)
         content_layout.addWidget(self.status_bar, 0)
@@ -622,6 +703,26 @@ QToolTip {
         effect.setOffset(0, y_offset)
         effect.setColor(color)
         widget.setGraphicsEffect(effect)
+
+    def _create_combat_table(
+        self,
+        object_name: str,
+        headers: list[str],
+    ) -> QtWidgets.QTableWidget:
+        table = QtWidgets.QTableWidget(0, len(headers))
+        table.setObjectName(object_name)
+        table.setHorizontalHeaderLabels(headers)
+        table.verticalHeader().setVisible(False)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(False)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        )
+        return table
 
     def _connect_signals(self) -> None:
         self.farm_button.clicked.connect(self._on_farm_clicked)
@@ -957,6 +1058,94 @@ QToolTip {
         self._uptime_timer.start(1000)
         self._update_uptime()
 
+    def _start_combat_telemetry_timer(self) -> None:
+        if hasattr(self, "_combat_telemetry_timer"):
+            if not self._combat_telemetry_timer.isActive():
+                self._combat_telemetry_timer.start(250)
+            return
+        self._combat_telemetry_timer = QtCore.QTimer(self)
+        self._combat_telemetry_timer.timeout.connect(self._refresh_combat_telemetry)
+        self._combat_telemetry_timer.start(250)
+        self._refresh_combat_telemetry()
+
+    def _refresh_combat_telemetry(self) -> None:
+        snapshot = self.controller.combat_telemetry_snapshot()
+        status = snapshot.bridge_status
+        if snapshot.character_loaded is False:
+            status += " | Character select"
+        self.combat_bridge_label.setText(status)
+        self.combat_bridge_label.setToolTip(
+            "Buffs and skill activations come from the ArcDPS BHud bridge. "
+            "Cooldown readiness is verified from the visible action bar."
+        )
+        self._populate_combat_skills(snapshot)
+        self._populate_combat_buffs(snapshot)
+
+    def _populate_combat_skills(self, snapshot: CombatTelemetrySnapshot) -> None:
+        table = self.combat_skills_table
+        skills = list(snapshot.skills)
+        if not skills:
+            self._populate_combat_placeholder(table, "Waiting for skill activity")
+            return
+        table.setRowCount(len(skills))
+        for row, skill in enumerate(skills):
+            if skill.ready is True:
+                state = "Ready"
+            elif skill.ready is False:
+                state = "Cooldown"
+            else:
+                state = "Tracking"
+            cooldown = self._format_combat_seconds(skill.remaining_seconds)
+            self._set_combat_table_item(table, row, 0, skill.name)
+            self._set_combat_table_item(table, row, 1, state)
+            self._set_combat_table_item(table, row, 2, cooldown)
+
+    def _populate_combat_buffs(self, snapshot: CombatTelemetrySnapshot) -> None:
+        table = self.combat_buffs_table
+        buffs = list(snapshot.buffs)
+        if not buffs:
+            self._populate_combat_placeholder(table, "Waiting for ArcDPS buff events")
+            return
+        table.setRowCount(len(buffs))
+        for row, buff in enumerate(buffs):
+            self._set_combat_table_item(table, row, 0, buff.name)
+            self._set_combat_table_item(table, row, 1, str(buff.stacks))
+            self._set_combat_table_item(
+                table,
+                row,
+                2,
+                self._format_combat_seconds(buff.remaining_seconds),
+            )
+
+    @staticmethod
+    def _format_combat_seconds(seconds: Optional[float]) -> str:
+        if seconds is None:
+            return "--"
+        if seconds <= 0:
+            return "Ready"
+        return f"{seconds:.1f}s"
+
+    @staticmethod
+    def _set_combat_table_item(
+        table: QtWidgets.QTableWidget,
+        row: int,
+        column: int,
+        text: str,
+    ) -> None:
+        item = QtWidgets.QTableWidgetItem(text)
+        item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
+        table.setItem(row, column, item)
+
+    def _populate_combat_placeholder(
+        self,
+        table: QtWidgets.QTableWidget,
+        text: str,
+    ) -> None:
+        table.setRowCount(1)
+        self._set_combat_table_item(table, 0, 0, text)
+        for column in range(1, table.columnCount()):
+            self._set_combat_table_item(table, 0, column, "--")
+
     def _update_uptime(self) -> None:
         elapsed = int(time.monotonic() - self._app_start_time)
         hours, remainder = divmod(elapsed, 3600)
@@ -1055,6 +1244,8 @@ QToolTip {
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # type: ignore[override]
         super().showEvent(event)
+        self.controller.start_combat_monitor()
+        self._start_combat_telemetry_timer()
         if self._global_hotkey is not None and not self._global_hotkey.is_registered:
             if not self._global_hotkey.register():
                 self.status_label.setText(
@@ -1077,6 +1268,9 @@ QToolTip {
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[override]
         self.controller.stop_rotation()
+        self.controller.stop_combat_monitor()
+        if hasattr(self, "_combat_telemetry_timer"):
+            self._combat_telemetry_timer.stop()
         if hasattr(self, "_global_hotkey") and self._global_hotkey is not None:
             self._global_hotkey.dispose()
             self._global_hotkey = None
