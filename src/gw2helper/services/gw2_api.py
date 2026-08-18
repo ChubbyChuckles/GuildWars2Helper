@@ -40,7 +40,9 @@ def load_gw2_api_key() -> Optional[str]:
     for env_path in _environment_paths():
         if not env_path.is_file():
             continue
-        load_dotenv(env_path, override=False)
+        # We only reach this point when the process has no usable key, so an
+        # empty inherited variable must not hide a valid local configuration.
+        load_dotenv(env_path, override=True)
         configured_key = os.getenv(API_KEY_ENV_VAR, "").strip()
         if configured_key:
             return configured_key
@@ -143,6 +145,18 @@ class Gw2ApiClient:
             )
             response.raise_for_status()
             return response.json()
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code == 401:
+                message = "Guild Wars 2 rejected GW2_API_KEY. Check the key in .env."
+            elif status_code == 403:
+                message = (
+                    f"GW2_API_KEY is missing permission for '{endpoint}'. "
+                    "Create a key with the required account and character scopes."
+                )
+            else:
+                message = "Guild Wars 2 API request failed."
+            raise Gw2ApiError(message) from exc
         except requests.RequestException as exc:
             raise Gw2ApiError("Guild Wars 2 API request failed.") from exc
         except ValueError as exc:

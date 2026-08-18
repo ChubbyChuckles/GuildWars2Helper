@@ -20,6 +20,7 @@ class TaskController(QtCore.QObject):
     character_progress = QtCore.pyqtSignal(dict)
     bank_summary_loaded = QtCore.pyqtSignal(object)
     bank_summary_failed = QtCore.pyqtSignal(str)
+    rotation_state_changed = QtCore.pyqtSignal(bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -29,6 +30,8 @@ class TaskController(QtCore.QObject):
         self._is_paused = False
         self._should_skip_character: Optional[Callable[[str], bool]] = None
         self._bank_load_thread: Optional[Thread] = None
+        self._rotation_thread: Optional[Thread] = None
+        self._rotation_stop_event: Optional[Event] = None
 
     def set_empty_chars_enabled(self, enabled: bool) -> None:
         if constants.EMPTY_CHARS == enabled:
@@ -44,6 +47,13 @@ class TaskController(QtCore.QObject):
         state = "enabled" if enabled else "disabled"
         self.status_changed.emit(f"Shutdown after farming {state}.")
 
+    def set_combat_cc_enabled(self, enabled: bool) -> None:
+        if constants.COMBAT_CC_ENABLED == enabled:
+            return
+        constants.set_combat_cc_enabled(enabled)
+        state = "enabled" if enabled else "disabled"
+        self.status_changed.emit(f"Combat crowd control {state}.")
+
     def run_skyscale_bug(self) -> None:
         Thread(target=tasks.do_skyscale_bug, daemon=True).start()
 
@@ -54,6 +64,9 @@ class TaskController(QtCore.QObject):
     ) -> None:
         if self.is_farming_active():
             self.status_changed.emit("Farming already running.")
+            return
+        if self.is_rotation_active():
+            self.status_changed.emit("Stop the damage rotation before starting farming.")
             return
 
         self._pause_event.set()
@@ -89,6 +102,48 @@ class TaskController(QtCore.QObject):
 
     def copy_next_event_code(self) -> Optional[str]:
         return tasks.clipboard_event_code()
+
+    def start_rotation(self) -> bool:
+        """Start the legacy image-driven damage rotation in a daemon thread."""
+
+        if self.is_farming_active():
+            self.status_changed.emit("Pause or finish farming before starting the damage rotation.")
+            return False
+        if self.is_rotation_active():
+            return False
+
+        stop_event = Event()
+        self._rotation_stop_event = stop_event
+
+        def worker() -> None:
+            try:
+                tasks.do_rotation(stop_event, constants.is_combat_cc_enabled)
+            except Exception as exc:  # pragma: no cover - runtime safeguard
+                self.status_changed.emit(f"Damage rotation failed: {exc}")
+            finally:
+                self._rotation_stop_event = None
+                self._rotation_thread = None
+                self.rotation_state_changed.emit(False)
+
+        self._rotation_thread = Thread(target=worker, daemon=True)
+        self._rotation_thread.start()
+        self.rotation_state_changed.emit(True)
+        self.status_changed.emit("Damage rotation started.")
+        return True
+
+    def stop_rotation(self) -> bool:
+        """Request a running damage rotation to stop at its next skill scan."""
+
+        if not self.is_rotation_active() or self._rotation_stop_event is None:
+            return False
+        self._rotation_stop_event.set()
+        self.status_changed.emit("Stopping damage rotation.")
+        return True
+
+    def toggle_rotation(self) -> bool:
+        if self.is_rotation_active():
+            return self.stop_rotation()
+        return self.start_rotation()
 
     def load_bank_summary(self) -> bool:
         """Load account-bank metrics without blocking the Qt event loop."""
@@ -140,6 +195,9 @@ class TaskController(QtCore.QObject):
 
     def is_farming_active(self) -> bool:
         return self._farm_thread is not None and self._farm_thread.is_alive()
+
+    def is_rotation_active(self) -> bool:
+        return self._rotation_thread is not None and self._rotation_thread.is_alive()
 
     def is_paused(self) -> bool:
         return self._is_paused

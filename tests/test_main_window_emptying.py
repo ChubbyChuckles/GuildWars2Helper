@@ -65,6 +65,23 @@ class MainWindowEmptyingTests(unittest.TestCase):
         self.assertEqual(self.window.bank_rare_pill.text(), "Rare 3")
         self.assertEqual(self.window.bank_exotic_pill.text(), "Exotic 2")
 
+    def test_api_errors_are_shown_in_the_interface(self) -> None:
+        self.window._on_characters_load_failed("GW2_API_KEY is missing characters scope.")
+        self.window._on_bank_summary_failed("GW2_API_KEY is missing account scope.")
+
+        self.assertEqual(self.window.character_combo.currentText(), "Characters unavailable")
+        self.assertFalse(self.window.character_combo.isEnabled())
+        self.assertEqual(self.window.bank_slots_pill.text(), "Bank Unavailable")
+        self.assertIn("account scope", self.window.status_label.text())
+
+    def test_idle_combat_control_starts_rotation(self) -> None:
+        with patch.object(self.window.controller, "toggle_rotation", return_value=True) as toggle:
+            self.window._toggle_pause()
+
+        self.assertEqual(self.window.pause_button.text(), "Start Rotation")
+        self.assertTrue(self.window.pause_button.isEnabled())
+        toggle.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

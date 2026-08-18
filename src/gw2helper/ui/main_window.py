@@ -233,6 +233,7 @@ class ScrollingLabel(QtWidgets.QLabel):
 
 class MainWindow(QtWidgets.QWidget):
     characters_loaded = QtCore.pyqtSignal(list)
+    characters_load_failed = QtCore.pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -520,8 +521,8 @@ QToolTip {
 
         self.pause_button = QtWidgets.QPushButton("Pause")
         self.pause_button.setObjectName("PauseButton")
-        self.pause_button.setEnabled(False)
-        self.pause_button.setToolTip("Pause farming (F5)")
+        self.pause_button.setText("Start Rotation")
+        self.pause_button.setToolTip("Start damage rotation (F5)")
         self._apply_soft_shadow(
             self.pause_button,
             QtGui.QColor(120, 210, 235, 150),
@@ -544,6 +545,10 @@ QToolTip {
         self.shutdown_checkbox = QtWidgets.QCheckBox("Shutdown")
         self.shutdown_checkbox.setChecked(constants.SHUTDOWN)
         options_row.addWidget(self.shutdown_checkbox)
+        self.cc_checkbox = QtWidgets.QCheckBox("Use CC")
+        self.cc_checkbox.setChecked(constants.COMBAT_CC_ENABLED)
+        self.cc_checkbox.setToolTip("Use crowd-control skills during the damage rotation")
+        options_row.addWidget(self.cc_checkbox)
         options_row.addStretch()
         panel_layout.addLayout(options_row)
 
@@ -624,6 +629,7 @@ QToolTip {
         self.character_combo.currentTextChanged.connect(self._on_character_selected)
         self.empty_checkbox.stateChanged.connect(self._handle_empty_checkbox)
         self.shutdown_checkbox.stateChanged.connect(self._handle_shutdown_checkbox)
+        self.cc_checkbox.stateChanged.connect(self._handle_cc_checkbox)
         self.refresh_bank_button.clicked.connect(self._load_bank_summary)
 
         self.controller.status_changed.connect(self.status_label.setText)
@@ -633,17 +639,30 @@ QToolTip {
         self.controller.character_progress.connect(self._on_character_progress)
         self.controller.bank_summary_loaded.connect(self._on_bank_summary_loaded)
         self.controller.bank_summary_failed.connect(self._on_bank_summary_failed)
+        self.controller.rotation_state_changed.connect(self._on_rotation_state_changed)
         self.characters_loaded.connect(self._populate_characters)
+        self.characters_load_failed.connect(self._on_characters_load_failed)
 
     def _load_characters_async(self) -> None:
         def worker() -> None:
             try:
                 characters = tasks.get_character_list()
-            except Exception:
-                characters = []
+            except Exception as exc:
+                self.characters_load_failed.emit(str(exc))
+                return
             self.characters_loaded.emit(characters)
 
         Thread(target=worker, daemon=True).start()
+
+    def _on_characters_load_failed(self, message: str) -> None:
+        self.character_combo.blockSignals(True)
+        self.character_combo.clear()
+        self.character_combo.addItem("Characters unavailable")
+        self.character_combo.setEnabled(False)
+        self.character_combo.blockSignals(False)
+        self._set_remaining_characters(0)
+        self.status_label.setText(f"Character API unavailable: {message}")
+        self._refresh_stats_display()
 
     def _load_bank_summary(self) -> None:
         if not self.controller.load_bank_summary():
@@ -678,6 +697,7 @@ QToolTip {
         self._set_pill_state(self.bank_rare_pill, "Rare --", "neutral")
         self._set_pill_state(self.bank_exotic_pill, "Exotic --", "neutral")
         self.bank_slots_pill.setToolTip(message)
+        self.status_label.setText(f"Bank API unavailable: {message}")
 
     def _populate_characters(self, characters: list[str]) -> None:
         names = [name for name in characters if isinstance(name, str) and name]
@@ -761,6 +781,10 @@ QToolTip {
         enabled = state == QtCore.Qt.CheckState.Checked
         self.controller.set_shutdown_enabled(enabled)
 
+    def _handle_cc_checkbox(self, state: int) -> None:
+        enabled = state == QtCore.Qt.CheckState.Checked
+        self.controller.set_combat_cc_enabled(enabled)
+
     def _on_farm_clicked(self) -> None:
         self.controller.run_alt_char_farm(
             should_skip_character=self._is_character_farmed_today
@@ -775,9 +799,7 @@ QToolTip {
 
     def _on_farming_completed(self, payload: dict) -> None:
         self.farm_button.setEnabled(True)
-        self.pause_button.setEnabled(False)
-        self.pause_button.setText("Pause")
-        self.pause_button.setToolTip("Pause farming (F5)")
+        self._set_rotation_button_state(self.controller.is_rotation_active())
 
         if payload.get("error"):
             return
@@ -816,9 +838,7 @@ QToolTip {
 
     def _on_pause_state_changed(self, paused: bool) -> None:
         if not self.controller.is_farming_active():
-            self.pause_button.setText("Pause")
-            self.pause_button.setToolTip("Pause farming (F5)")
-            self.pause_button.setEnabled(False)
+            self._set_rotation_button_state(self.controller.is_rotation_active())
             return
         if paused:
             self.pause_button.setText("Resume")
@@ -828,9 +848,25 @@ QToolTip {
             self.pause_button.setToolTip("Pause farming (F5)")
 
     def _toggle_pause(self) -> None:
-        if not self.controller.is_farming_active():
+        if self.controller.is_farming_active():
+            self.controller.toggle_pause()
             return
-        self.controller.toggle_pause()
+        self.controller.toggle_rotation()
+
+    def _on_rotation_state_changed(self, running: bool) -> None:
+        if self.controller.is_farming_active():
+            return
+        self.farm_button.setEnabled(not running)
+        self._set_rotation_button_state(running)
+
+    def _set_rotation_button_state(self, running: bool) -> None:
+        self.pause_button.setEnabled(True)
+        if running:
+            self.pause_button.setText("Stop Rotation")
+            self.pause_button.setToolTip("Stop damage rotation (F5)")
+        else:
+            self.pause_button.setText("Start Rotation")
+            self.pause_button.setToolTip("Start damage rotation (F5)")
 
     def _create_global_hotkey(self):
         if _F5Hotkey is None or sys.platform != "win32":
@@ -1040,6 +1076,7 @@ QToolTip {
         self._schedule_state_save()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[override]
+        self.controller.stop_rotation()
         if hasattr(self, "_global_hotkey") and self._global_hotkey is not None:
             self._global_hotkey.dispose()
             self._global_hotkey = None

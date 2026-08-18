@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
+import tempfile
 import time
 from datetime import timedelta
+from pathlib import Path
 from threading import Event
 from timeit import default_timer as timer
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
@@ -94,6 +97,7 @@ else:  # pragma: no cover - optional dependency
 
 Region = tuple[int, int, int, int]
 _GW2_WINDOW_TITLE = "Guild Wars 2"
+_ASSET_DIRECTORY_NAME = "assets"
 
 
 def _is_gw2_window_foreground() -> bool:
@@ -118,6 +122,29 @@ def _click_character_selection_slot(x: int, y: int, clicks: int = 2) -> bool:
     return True
 
 
+def _application_directory() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[3]
+
+
+def _asset_path(image_path: str | Path) -> str:
+    candidate = Path(image_path)
+    if candidate.is_absolute():
+        return str(candidate)
+
+    bundled_asset = _application_directory() / _ASSET_DIRECTORY_NAME / candidate.name
+    if bundled_asset.is_file():
+        return str(bundled_asset)
+    return str(candidate)
+
+
+def _capture_path(name: str) -> str:
+    capture_directory = Path(tempfile.gettempdir()) / "GuildWars2Helper"
+    capture_directory.mkdir(parents=True, exist_ok=True)
+    return str(capture_directory / name)
+
+
 def take_screenshot(region: Region):
     screenshot = pyautogui.screenshot(region=region)
     return screenshot
@@ -126,8 +153,12 @@ def take_screenshot(region: Region):
 def find_image_in_image(
     big_image_path: str, small_image_path: str
 ) -> list[tuple[int, int]]:
-    big_image = cv2.imread(big_image_path)
-    small_image = cv2.imread(small_image_path)
+    big_image = cv2.imread(str(big_image_path))
+    small_image = cv2.imread(_asset_path(small_image_path))
+    if big_image is None or small_image is None:
+        raise FileNotFoundError(
+            f"Could not load screenshot '{big_image_path}' or template '{small_image_path}'."
+        )
     big_image_gray = cv2.cvtColor(big_image, cv2.COLOR_BGR2GRAY)
     small_image_gray = cv2.cvtColor(small_image, cv2.COLOR_BGR2GRAY)
     result = cv2.matchTemplate(big_image_gray, small_image_gray, cv2.TM_CCOEFF_NORMED)
@@ -169,9 +200,9 @@ def scan_skills():
     start = timer()
     region = (1514, 1986, 766, 160)
     screenshot = take_screenshot(region)
-    screenshot.save("skills.png")
+    big_image_path = _capture_path("skills.png")
+    screenshot.save(big_image_path)
     time.sleep(0.01)
-    big_image_path = "skills.png"
 
     def check(pattern: str) -> bool:
         return bool(find_image_in_image(big_image_path, pattern))
@@ -501,21 +532,37 @@ def remove_from_list(values: list[str], value: str) -> list[str]:
     return values
 
 
+def _should_skip_character(
+    should_skip_character: Optional[Callable[[str], bool]],
+    character_name: str,
+) -> bool:
+    """Keep daily skip logic off while an explicit emptying run is requested."""
+
+    if constants.EMPTY_CHARS or should_skip_character is None:
+        return False
+    try:
+        return bool(should_skip_character(character_name))
+    except Exception:
+        return False
+
+
 def is_shared_inv_open() -> bool:
     region = (1650, 748, 58, 42)
     screenshot = take_screenshot(region)
-    screenshot.save("inv_open.png")
+    screenshot_path = _capture_path("inv_open.png")
+    screenshot.save(screenshot_path)
     time.sleep(0.1)
-    locs = find_image_in_image("inv_open.png", "open_shared_inv.png")
+    locs = find_image_in_image(screenshot_path, "open_shared_inv.png")
     return bool(locs)
 
 
 def is_shared_inv_closed() -> bool:
     region = (1650, 748, 58, 42)
     screenshot = take_screenshot(region)
-    screenshot.save("inv_closed.png")
+    screenshot_path = _capture_path("inv_closed.png")
+    screenshot.save(screenshot_path)
     time.sleep(0.1)
-    locs = find_image_in_image("inv_closed.png", "closed_shared_inv.png")
+    locs = find_image_in_image(screenshot_path, "closed_shared_inv.png")
     return bool(locs)
 
 
@@ -529,26 +576,27 @@ def empty_out_character() -> None:
     autoit.auto_it_set_option("MouseClickDragDelay", 5)
     region = (2190, 577, 136, 38)
     screenshot = take_screenshot(region)
-    screenshot.save("test.png")
+    screenshot_path = _capture_path("emptying_test.png")
+    screenshot.save(screenshot_path)
     time.sleep(0.01)
     tesseract_cmd = r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
-    extracted_text = read_text_from_image("test.png", tesseract_cmd)
+    extracted_text = read_text_from_image(screenshot_path, tesseract_cmd)
     if "Inventory" not in extracted_text:
         autoit.send("i")
         time.sleep(0.5)
     region = (1447, 675, 190, 34)
     screenshot = take_screenshot(region)
-    screenshot.save("test.png")
+    screenshot.save(screenshot_path)
     time.sleep(0.01)
-    extracted_text = read_text_from_image("test.png", tesseract_cmd)
+    extracted_text = read_text_from_image(screenshot_path, tesseract_cmd)
     if "Account" not in extracted_text:
         autoit.mouse_click("left", 2070, 828, 1, 0)
         time.sleep(0.5)
     region = (1426, 755, 206, 60)
     screenshot = take_screenshot(region)
-    screenshot.save("test.png")
+    screenshot.save(screenshot_path)
     time.sleep(0.01)
-    extracted_text = read_text_from_image("test.png", tesseract_cmd)
+    extracted_text = read_text_from_image(screenshot_path, tesseract_cmd)
     if "Account" not in extracted_text:
         autoit.mouse_click("left", 1687, 775, 1, 0)
         time.sleep(1)
@@ -582,9 +630,10 @@ def look_for_char(char_name: str) -> None:
     for _ in range(72):
         region = (48, 1800, 300, 45)
         screenshot = take_screenshot(region)
-        screenshot.save("char_name.png")
+        screenshot_path = _capture_path("char_name.png")
+        screenshot.save(screenshot_path)
         time.sleep(0.1)
-        current_char = read_text_from_image("char_name.png", tesseract_cmd)
+        current_char = read_text_from_image(screenshot_path, tesseract_cmd)
         if char_name in current_char:
             autoit.send("{ENTER}")
             break
@@ -680,12 +729,7 @@ def alt_char_farm(
                     continue
         char_name = char_get_name()
         character_list = remove_from_list(character_list, char_name)
-        already_farmed = False
-        if should_skip_character is not None:
-            try:
-                already_farmed = bool(should_skip_character(char_name))
-            except Exception:
-                already_farmed = False
+        already_farmed = _should_skip_character(should_skip_character, char_name)
         for skip in constants.CHARS_TO_SKIP:
             if skip in char_name:
                 empty_this_char = False

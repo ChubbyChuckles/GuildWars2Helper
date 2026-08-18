@@ -41,10 +41,17 @@ try:
 except ModuleNotFoundError:
     pass
 
+_include_files = [
+    (".env.example", ".env.example"),
+    ("assets", "assets"),
+]
+if (ROOT_DIR / ".env").is_file():
+    _include_files.append((".env", ".env"))
+
 build_exe_options = {
     "packages": ["gw2helper"],
     "includes": ["gw2helper.ui.main_window"],
-    "include_files": [(".env.example", ".env.example")],
+    "include_files": _include_files,
     "path": _build_path,
 }
 

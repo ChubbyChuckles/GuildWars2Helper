@@ -88,6 +88,28 @@ class Gw2ApiTests(unittest.TestCase):
             ):
                 self.assertEqual(gw2_api.load_gw2_api_key(), "test-from-dotenv")
 
+    def test_dotenv_replaces_an_empty_inherited_key(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            env_path = Path(temporary_directory) / ".env"
+            env_path.write_text("GW2_API_KEY=test-from-dotenv\n", encoding="utf-8")
+            with (
+                patch.dict(os.environ, {"GW2_API_KEY": ""}, clear=True),
+                patch.object(gw2_api, "_environment_paths", return_value=(env_path,)),
+            ):
+                self.assertEqual(gw2_api.load_gw2_api_key(), "test-from-dotenv")
+
+    def test_frozen_application_looks_for_dotenv_beside_executable(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            executable = Path(temporary_directory) / "GuildWars2Helper.exe"
+            executable.touch()
+            with (
+                patch.object(gw2_api.sys, "frozen", True, create=True),
+                patch.object(gw2_api.sys, "executable", str(executable)),
+            ):
+                environment_paths = gw2_api._environment_paths()
+
+        self.assertIn(executable.parent / ".env", environment_paths)
+
     def test_missing_key_has_a_clear_error(self) -> None:
         client = gw2_api.Gw2ApiClient(api_key="", session=_Session())
 
