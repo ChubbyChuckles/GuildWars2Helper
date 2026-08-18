@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import requests
 import time
 from datetime import timedelta
 from threading import Event
@@ -32,6 +31,7 @@ from PIL import Image
 
 from .. import constants
 from ..services.arc_client import is_in_char_select_screen
+from ..services.gw2_api import Gw2ApiClient
 from ..services.mumble import MumbleLink
 from ..services.notifications import play_beep, send_message
 
@@ -107,9 +107,13 @@ def _click_character_selection_slot(x: int, y: int, clicks: int = 2) -> bool:
     """Click a character slot only while Guild Wars 2 owns the foreground."""
 
     if not _is_gw2_window_foreground():
-        autoit.win_activate(_GW2_WINDOW_TITLE)
+        try:
+            autoit.win_activate(_GW2_WINDOW_TITLE)
+        except Exception:
+            return False
         time.sleep(1)
-        
+    if not _is_gw2_window_foreground():
+        return False
     autoit.mouse_click("left", x, y, clicks, 0)
     return True
 
@@ -488,11 +492,7 @@ def char_get_name() -> str:
 
 
 def get_character_list() -> list[str]:
-    api_key = "0B7DC38C-23B0-D444-998C-53718A22155AFA9349A4-33DE-439C-9BF7-1AAD70DC39D5"
-    url = "https://api.guildwars2.com/v2/characters/?access_token=" + api_key
-    response = requests.get(url)
-    parsed_items = json.loads(response.content)
-    return sorted(parsed_items)
+    return Gw2ApiClient().get_characters()
 
 
 def remove_from_list(values: list[str], value: str) -> list[str]:

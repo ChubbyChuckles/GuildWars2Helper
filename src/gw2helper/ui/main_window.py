@@ -15,6 +15,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from .. import constants, persistence
 from ..automation import tasks
 from ..controllers.task_controller import TaskController
+from ..services.gw2_api import BankSummary
 
 if sys.platform == "win32":
 
@@ -241,6 +242,9 @@ class MainWindow(QtWidgets.QWidget):
             self._app_state.farmed_characters = {}
         self._reset_tz = timezone(timedelta(hours=2))
         self._prune_stale_farmed_characters()
+        self._emptying_due_at_startup = persistence.is_emptying_due(self._app_state)
+        if self._emptying_due_at_startup:
+            constants.set_empty_chars_enabled(True)
         self._app_start_time = time.monotonic()
         self.controller = TaskController()
         self._save_state_timer = QtCore.QTimer(self)
@@ -257,6 +261,7 @@ class MainWindow(QtWidgets.QWidget):
         self._build_ui()
         self._connect_signals()
         self._load_characters_async()
+        self._load_bank_summary()
         self._start_event_timer()
         self._start_uptime_timer()
         self._refresh_stats_display()
@@ -275,8 +280,9 @@ class MainWindow(QtWidgets.QWidget):
         self.setWindowFlags(flags)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-        width = self._app_state.window_width or 520
-        height = self._app_state.window_height or 460
+        self.setMinimumSize(650, 520)
+        width = max(self._app_state.window_width or 650, 650)
+        height = max(self._app_state.window_height or 460, 520)
         self.resize(width, height)
         if (
             self._app_state.window_x is not None
@@ -530,12 +536,42 @@ QToolTip {
         options_row.setSpacing(18)
         self.empty_checkbox = QtWidgets.QCheckBox("Empty Character")
         self.empty_checkbox.setChecked(constants.EMPTY_CHARS)
+        if self._emptying_due_at_startup:
+            self.empty_checkbox.setToolTip(
+                "Enabled automatically after seven farming days since the last emptying run."
+            )
         options_row.addWidget(self.empty_checkbox)
         self.shutdown_checkbox = QtWidgets.QCheckBox("Shutdown")
         self.shutdown_checkbox.setChecked(constants.SHUTDOWN)
         options_row.addWidget(self.shutdown_checkbox)
         options_row.addStretch()
         panel_layout.addLayout(options_row)
+
+        bank_row = QtWidgets.QHBoxLayout()
+        bank_row.setSpacing(8)
+        self.bank_slots_pill = QtWidgets.QLabel("Bank Loading")
+        self.bank_slots_pill.setObjectName("StatPill")
+        self.bank_slots_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.bank_slots_pill.setProperty("state", "neutral")
+        bank_row.addWidget(self.bank_slots_pill)
+
+        self.bank_rare_pill = QtWidgets.QLabel("Rare --")
+        self.bank_rare_pill.setObjectName("StatPill")
+        self.bank_rare_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.bank_rare_pill.setProperty("state", "neutral")
+        bank_row.addWidget(self.bank_rare_pill)
+
+        self.bank_exotic_pill = QtWidgets.QLabel("Exotic --")
+        self.bank_exotic_pill.setObjectName("StatPill")
+        self.bank_exotic_pill.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.bank_exotic_pill.setProperty("state", "neutral")
+        bank_row.addWidget(self.bank_exotic_pill)
+
+        self.refresh_bank_button = QtWidgets.QPushButton("Refresh Bank")
+        self.refresh_bank_button.setToolTip("Refresh account-bank data from the Guild Wars 2 API")
+        bank_row.addWidget(self.refresh_bank_button)
+        bank_row.addStretch()
+        panel_layout.addLayout(bank_row)
 
         stats_row = QtWidgets.QHBoxLayout()
         stats_row.setSpacing(18)
@@ -588,12 +624,15 @@ QToolTip {
         self.character_combo.currentTextChanged.connect(self._on_character_selected)
         self.empty_checkbox.stateChanged.connect(self._handle_empty_checkbox)
         self.shutdown_checkbox.stateChanged.connect(self._handle_shutdown_checkbox)
+        self.refresh_bank_button.clicked.connect(self._load_bank_summary)
 
         self.controller.status_changed.connect(self.status_label.setText)
         self.controller.pause_state_changed.connect(self._on_pause_state_changed)
         self.controller.farming_started.connect(self._on_farming_started)
         self.controller.farming_completed.connect(self._on_farming_completed)
         self.controller.character_progress.connect(self._on_character_progress)
+        self.controller.bank_summary_loaded.connect(self._on_bank_summary_loaded)
+        self.controller.bank_summary_failed.connect(self._on_bank_summary_failed)
         self.characters_loaded.connect(self._populate_characters)
 
     def _load_characters_async(self) -> None:
@@ -605,6 +644,40 @@ QToolTip {
             self.characters_loaded.emit(characters)
 
         Thread(target=worker, daemon=True).start()
+
+    def _load_bank_summary(self) -> None:
+        if not self.controller.load_bank_summary():
+            return
+        self.refresh_bank_button.setEnabled(False)
+        self._set_pill_state(self.bank_slots_pill, "Bank Loading", "neutral")
+
+    def _on_bank_summary_loaded(self, summary: BankSummary) -> None:
+        self.refresh_bank_button.setEnabled(True)
+        self._set_pill_state(
+            self.bank_slots_pill,
+            f"Bank {summary.occupied_slots}/{summary.total_slots}",
+            "info",
+        )
+        self._set_pill_state(
+            self.bank_rare_pill,
+            f"Rare {summary.rare_gear_items}",
+            "neutral",
+        )
+        self._set_pill_state(
+            self.bank_exotic_pill,
+            f"Exotic {summary.exotic_gear_items}",
+            "neutral",
+        )
+        self.bank_slots_pill.setToolTip("Occupied account-bank slots")
+        self.bank_rare_pill.setToolTip("Rare weapons and armor pieces in the bank")
+        self.bank_exotic_pill.setToolTip("Exotic weapons and armor pieces in the bank")
+
+    def _on_bank_summary_failed(self, message: str) -> None:
+        self.refresh_bank_button.setEnabled(True)
+        self._set_pill_state(self.bank_slots_pill, "Bank Unavailable", "negative")
+        self._set_pill_state(self.bank_rare_pill, "Rare --", "neutral")
+        self._set_pill_state(self.bank_exotic_pill, "Exotic --", "neutral")
+        self.bank_slots_pill.setToolTip(message)
 
     def _populate_characters(self, characters: list[str]) -> None:
         names = [name for name in characters if isinstance(name, str) and name]
@@ -650,7 +723,12 @@ QToolTip {
         self._app_state.last_remaining_characters = self._remaining_characters
 
     def _utc_timestamp(self) -> str:
-        return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        return (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
 
     def _current_reset_key(self) -> str:
         now_local = datetime.now(self._reset_tz)
@@ -710,10 +788,20 @@ QToolTip {
         self._app_state.characters_farmed_last_run = characters_farmed
 
         if payload.get("emptied"):
-            timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-            self._app_state.last_empty_timestamp = timestamp
-            self._app_state.farm_count_since_empty = 0
+            timestamp = self._utc_timestamp()
+            persistence.complete_emptying_cycle(self._app_state, timestamp)
+            constants.set_empty_chars_enabled(False)
+            self.empty_checkbox.blockSignals(True)
+            self.empty_checkbox.setChecked(False)
+            self.empty_checkbox.blockSignals(False)
+            self.empty_checkbox.setToolTip(
+                "Enabled automatically after seven farming days since the last emptying run."
+            )
         elif characters_farmed > 0:
+            persistence.record_farming_day(
+                self._app_state,
+                self._current_reset_key(),
+            )
             self._app_state.farm_count_since_empty = (
                 max(0, self._app_state.farm_count_since_empty) + 1
             )
@@ -768,6 +856,11 @@ QToolTip {
                 "reset_key": current_key,
                 "timestamp": self._utc_timestamp(),
             }
+            persistence.record_character_farmed(
+                self._app_state,
+                name,
+                count_toward_current_cycle=not bool(payload.get("emptied")),
+            )
         elif (
             status == "skipped-already"
             and name not in self._app_state.farmed_characters
@@ -847,10 +940,18 @@ QToolTip {
         else:
             self.farmed_today_pill.setToolTip("No farming sessions recorded yet.")
 
-        runs = max(0, self._app_state.farm_count_since_empty)
-        runs_text = f"Runs Since Empty: {runs}"
-        runs_state = "info" if runs else "neutral"
-        self._set_pill_state(self.farm_count_pill, runs_text, runs_state)
+        farming_days = persistence.farming_days_since_empty_count(self._app_state)
+        required_days = persistence.EMPTY_AFTER_FARM_DAYS
+        emptying_due = persistence.is_emptying_due(self._app_state)
+        schedule_text = (
+            "Emptying: Due"
+            if emptying_due
+            else f"Emptying: {farming_days}/{required_days} days"
+        )
+        schedule_state = (
+            "negative" if emptying_due else "info" if farming_days else "neutral"
+        )
+        self._set_pill_state(self.farm_count_pill, schedule_text, schedule_state)
 
         total_known = self._total_characters or self._app_state.last_total_characters
         remaining = max(0, self._remaining_characters)
@@ -869,6 +970,19 @@ QToolTip {
         if self._app_state.characters_farmed_last_run:
             tooltip_parts.append(
                 f"Previous run farmed {self._app_state.characters_farmed_last_run} characters"
+            )
+        tooltip_parts.append(f"Farming days since empty: {farming_days}/{required_days}")
+        tooltip_parts.append(
+            f"Runs since empty: {max(0, self._app_state.farm_count_since_empty)}"
+        )
+        cycle_counts = self._app_state.character_farm_counts_since_empty
+        if cycle_counts:
+            frequent_characters = sorted(
+                cycle_counts.items(), key=lambda item: (-item[1], item[0])
+            )[:3]
+            tooltip_parts.append(
+                "Current cycle: "
+                + ", ".join(f"{name} x{count}" for name, count in frequent_characters)
             )
         tooltip_parts.append(f"Characters farmed today: {unique_today}")
         self.farm_count_pill.setToolTip(

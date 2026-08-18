@@ -8,3 +8,4 @@ pytesseract==0.3.13
 Pillow==11.3.0
 psutil==7.1.0
 requests==2.32.5
+python-dotenv==1.1.1

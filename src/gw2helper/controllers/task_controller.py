@@ -9,6 +9,7 @@ from PyQt6 import QtCore
 
 from .. import constants
 from ..automation import tasks
+from ..services.gw2_api import Gw2ApiClient
 
 
 class TaskController(QtCore.QObject):
@@ -17,6 +18,8 @@ class TaskController(QtCore.QObject):
     farming_completed = QtCore.pyqtSignal(dict)
     pause_state_changed = QtCore.pyqtSignal(bool)
     character_progress = QtCore.pyqtSignal(dict)
+    bank_summary_loaded = QtCore.pyqtSignal(object)
+    bank_summary_failed = QtCore.pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -25,6 +28,7 @@ class TaskController(QtCore.QObject):
         self._pause_event.set()
         self._is_paused = False
         self._should_skip_character: Optional[Callable[[str], bool]] = None
+        self._bank_load_thread: Optional[Thread] = None
 
     def set_empty_chars_enabled(self, enabled: bool) -> None:
         if constants.EMPTY_CHARS == enabled:
@@ -85,6 +89,26 @@ class TaskController(QtCore.QObject):
 
     def copy_next_event_code(self) -> Optional[str]:
         return tasks.clipboard_event_code()
+
+    def load_bank_summary(self) -> bool:
+        """Load account-bank metrics without blocking the Qt event loop."""
+
+        if self._bank_load_thread is not None and self._bank_load_thread.is_alive():
+            return False
+
+        def worker() -> None:
+            try:
+                summary = Gw2ApiClient().get_bank_summary()
+            except Exception as exc:  # pragma: no cover - network/runtime safeguard
+                self.bank_summary_failed.emit(str(exc))
+            else:
+                self.bank_summary_loaded.emit(summary)
+            finally:
+                self._bank_load_thread = None
+
+        self._bank_load_thread = Thread(target=worker, daemon=True)
+        self._bank_load_thread.start()
+        return True
 
     def pause_farming(self) -> None:
         if not self.is_farming_active():

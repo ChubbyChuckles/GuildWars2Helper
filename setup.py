@@ -44,7 +44,7 @@ except ModuleNotFoundError:
 build_exe_options = {
     "packages": ["gw2helper"],
     "includes": ["gw2helper.ui.main_window"],
-    "include_files": [],
+    "include_files": [(".env.example", ".env.example")],
     "path": _build_path,
 }
 
