@@ -103,6 +103,8 @@ _GW2_WINDOW_TITLE = "Guild Wars 2"
 _ASSET_DIRECTORY_NAME = "assets"
 _HUD_MATCH_THRESHOLD = 0.85
 _HUD_TEMPLATE_CACHE: dict[str, np.ndarray] = {}
+_BLADE_STRIP_X_RANGE = range(140, 271)
+_BLADE_STRIP_Y_RANGE = range(0, 31)
 
 
 def _is_gw2_window_foreground() -> bool:
@@ -194,6 +196,19 @@ def _find_hud_template_locations(
     )
     locations = np.where(result >= _HUD_MATCH_THRESHOLD)
     return list(zip(*locations[::-1]))
+
+
+def _count_visible_blades(hud_gray: np.ndarray) -> int:
+    """Count blade icons only inside Virtuoso's fixed blade strip."""
+
+    locations = _find_hud_template_locations(hud_gray, "blade.png")
+    return min(
+        5,
+        sum(
+            x in _BLADE_STRIP_X_RANGE and y in _BLADE_STRIP_Y_RANGE
+            for x, y in locations
+        ),
+    )
 
 
 def get_pixel_color(x: int, y: int) -> tuple[int, int, int]:
@@ -299,7 +314,7 @@ def read_combat_hud_status() -> dict[str, object]:
             )
         return bool(template_locations[template])
 
-    blade_count = len(_find_hud_template_locations(hud_gray, "blade.png"))
+    blade_count = _count_visible_blades(hud_gray)
 
     skill_4_focus_ready = is_ready("skill_4_focus.png")
     skill_4_sword_ready = is_ready("skill_4_sword.png")

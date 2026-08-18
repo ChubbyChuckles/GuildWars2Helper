@@ -163,6 +163,24 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
         self.assertEqual(decision.label, "Bladesong Sorrow")
         self.assertEqual(decision.key, "{F2}")
 
+    def test_does_not_spend_blades_before_five_are_available(self) -> None:
+        planner = ConditionVirtuosoPlanner(use_opener=False)
+        decision = planner.choose(
+            _snapshot(
+                skills=(
+                    _skill("Profession_1"),
+                    _skill("Profession_2"),
+                    _skill("Profession_3"),
+                    _skill("Profession_5"),
+                ),
+                blades=4,
+            ),
+            100.0,
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.label, "Maintain Flying Cutter")
+
     def test_casts_harmony_before_bladeturn_when_sorrow_is_unavailable(self) -> None:
         planner = ConditionVirtuosoPlanner(use_opener=False)
         decision = planner.choose(
@@ -175,6 +193,19 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.label, "Bladesong Harmony")
+
+    def test_casts_dissonance_before_bladeturn_when_other_bladesongs_are_unavailable(self) -> None:
+        planner = ConditionVirtuosoPlanner(use_opener=False)
+        decision = planner.choose(
+            _snapshot(
+                skills=(_skill("Profession_3"), _skill("Profession_5")),
+                blades=5,
+            ),
+            100.0,
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.label, "Bladesong Distortion")
 
     def test_keeps_sword_set_for_a_second_swordsman_before_swapping(self) -> None:
         planner = ConditionVirtuosoPlanner(use_opener=False)
@@ -266,6 +297,22 @@ class ConditionVirtuosoPlannerTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertEqual(decision.label, "Phantasmal Warden")
+
+    def test_does_not_revert_a_local_swap_from_stale_hud_weapon_state(self) -> None:
+        planner = ConditionVirtuosoPlanner(use_opener=False)
+        planner._weapon_set = "focus"
+        planner._toggle_weapon_set(100.0)
+
+        decision = planner.choose(
+            _snapshot(
+                skills=(_skill("Weapon_5"),),
+                weapon_set="focus",
+            ),
+            101.0,
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.label, "Phantasmal Swordsman")
 
     def test_signet_of_ether_waits_for_warden_reset_before_swapping(self) -> None:
         planner = ConditionVirtuosoPlanner(use_opener=False)

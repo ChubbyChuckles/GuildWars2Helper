@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 from PIL import Image
 
 from gw2helper.automation import tasks
@@ -117,6 +118,27 @@ class RotationAssetTests(unittest.TestCase):
                 status = tasks.read_combat_hud_status()
 
         self.assertTrue(status["Utility_Illusions"])
+
+    def test_blade_counter_ignores_matches_outside_the_blade_strip(self) -> None:
+        locations = [
+            (156, 4),
+            (179, 4),
+            (201, 4),
+            (223, 4),
+            (245, 4),
+            (49, 14),
+            (49, 15),
+            (394, 22),
+            (438, 17),
+        ]
+        with patch.object(
+            tasks,
+            "_find_hud_template_locations",
+            return_value=locations,
+        ):
+            blade_count = tasks._count_visible_blades(np.zeros((160, 766)))
+
+        self.assertEqual(blade_count, 5)
 
 
 if __name__ == "__main__":

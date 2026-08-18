@@ -189,7 +189,7 @@ class ConditionVirtuosoPlanner:
         self._focus_warden_reset_used = False
         self._awaiting_warden_reset_until = 0.0
         self._next_action_at = 0.0
-        self._ignore_hud_weapon_set_until = 0.0
+        self._weapon_set_calibrated = False
         self._slot_blocked_until: dict[str, float] = {}
         self._last_signet_illusions_at = float("-inf")
         self._disabled_skill_ids: set[int] = set()
@@ -217,8 +217,12 @@ class ConditionVirtuosoPlanner:
         if snapshot.player_moving:
             return None
 
-        if snapshot.weapon_set in {"focus", "sword"} and now >= self._ignore_hud_weapon_set_until:
+        if (
+            not self._weapon_set_calibrated
+            and snapshot.weapon_set in {"focus", "sword"}
+        ):
             self._weapon_set = snapshot.weapon_set
+            self._weapon_set_calibrated = True
 
         buff_names = {buff.name.casefold() for buff in snapshot.buffs}
         if self._HARD_CONTROL_EFFECTS & buff_names:
@@ -282,6 +286,17 @@ class ConditionVirtuosoPlanner:
                     timing_delay,
                     "five blades",
                     expected_skill_ids=(_SKILL_HARMONY,),
+                )
+            if self._ready(readiness, "Profession_3", now) and self._is_enabled(
+                (_SKILL_DISTORTION,)
+            ):
+                return self._decision(
+                    self._keybinds.distortion,
+                    "Bladesong Distortion",
+                    "Profession_3",
+                    timing_delay,
+                    "five blades after Bladesongs",
+                    expected_skill_ids=(_SKILL_DISTORTION,),
                 )
             if self._ready(readiness, "Profession_5", now) and self._is_enabled(
                 (_SKILL_BLADETURN,)
@@ -497,10 +512,10 @@ class ConditionVirtuosoPlanner:
             self._opener_complete = True
         if snapshot.weapon_set in {"focus", "sword"}:
             self._weapon_set = snapshot.weapon_set
+            self._weapon_set_calibrated = True
         self._pending_weapon_swap = False
         self._pending_signet_reset = False
         self._awaiting_warden_reset_until = 0.0
-        self._ignore_hud_weapon_set_until = 0.0
         self._slot_blocked_until.clear()
         self._next_action_at = now + 0.15
         self._resume_auto_attack = True
@@ -579,13 +594,14 @@ class ConditionVirtuosoPlanner:
         return None
 
     def _toggle_weapon_set(self, now: float) -> None:
+        del now
         self._weapon_set = "focus" if self._weapon_set == "sword" else "sword"
+        self._weapon_set_calibrated = True
         self._swordsmen_since_swap = 0
         self._pending_weapon_swap = False
         self._pending_signet_reset = False
         self._focus_warden_reset_used = False
         self._awaiting_warden_reset_until = 0.0
-        self._ignore_hud_weapon_set_until = now + 0.65
 
     def _can_use_signet_of_illusions(
         self,
