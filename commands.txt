@@ -1,0 +1,2 @@
+# compile program
+& .\.venv\Scripts\python.exe setup.py build

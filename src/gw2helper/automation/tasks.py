@@ -93,6 +93,25 @@ else:  # pragma: no cover - optional dependency
 
 
 Region = tuple[int, int, int, int]
+_GW2_WINDOW_TITLE = "Guild Wars 2"
+
+
+def _is_gw2_window_foreground() -> bool:
+    try:
+        return bool(autoit.win_active(_GW2_WINDOW_TITLE))
+    except Exception:
+        return False
+
+
+def _click_character_selection_slot(x: int, y: int, clicks: int = 2) -> bool:
+    """Click a character slot only while Guild Wars 2 owns the foreground."""
+
+    if not _is_gw2_window_foreground():
+        autoit.win_activate(_GW2_WINDOW_TITLE)
+        time.sleep(1)
+        
+    autoit.mouse_click("left", x, y, clicks, 0)
+    return True
 
 
 def take_screenshot(region: Region):
@@ -608,22 +627,41 @@ def alt_char_farm(
     stopped_due_to_repeats = False
     while character_list:
         wait_if_paused()
+        if not _is_gw2_window_foreground():
+            update_status(
+                "Guild Wars 2 is not foreground; waiting before selecting a character."
+            )
+            time.sleep(0.5)
+            continue
         empty_this_char = True
         login_counter += 1
-        autoit.mouse_click("left", 3727, 2058, 2, 0)
+        if not _click_character_selection_slot(3727, 2058):
+            update_status(
+                "Guild Wars 2 lost focus; waiting before selecting a character."
+            )
+            continue
         time.sleep(1)
-        autoit.mouse_click("left", 3727, 2058, 2, 0)
+        if not _click_character_selection_slot(3727, 2058):
+            update_status(
+                "Guild Wars 2 lost focus; waiting before selecting a character."
+            )
+            continue
         time.sleep(2.5)
         if login_counter % 20 == 0:
             time.sleep(15 if constants.EMPTY_CHARS else 180)
         elif login_counter % 10 == 0:
             time.sleep(15 if constants.EMPTY_CHARS else 60)
         if login_counter % 3 == 1:
-            autoit.mouse_click("left", 3610, 2062, 2, 0)
+            character_x = 3610
         elif login_counter % 3 == 2:
-            autoit.mouse_click("left", 3490, 2062, 2, 0)
+            character_x = 3490
         else:
-            autoit.mouse_click("left", 3380, 2062, 2, 0)
+            character_x = 3380
+        if not _click_character_selection_slot(character_x, 2062):
+            update_status(
+                "Guild Wars 2 lost focus; waiting before selecting a character."
+            )
+            continue
         login_attempt_counter = 0
         while True:
             wait_if_paused()
@@ -634,7 +672,12 @@ def alt_char_farm(
             login_attempt_counter += 1
             if login_attempt_counter > 20:
                 login_attempt_counter = 0
-                autoit.mouse_click("left", 3610, 2062, 2, 0)
+                if not _click_character_selection_slot(3610, 2062):
+                    update_status(
+                        "Guild Wars 2 is not foreground; waiting before retrying character selection."
+                    )
+                    time.sleep(0.5)
+                    continue
         char_name = char_get_name()
         character_list = remove_from_list(character_list, char_name)
         already_farmed = False
